@@ -30,9 +30,10 @@ EMPTY_BARS_SCHEMA = pa.schema(
     ]
 )
 
-# Same values the request path and the manifest share.
-LOCALE = "us"
-MARKET_TYPE = "stocks"
+# adjusted is forced false. Massive adjusts for splits unless this is set,
+# and a later split would change history if those values were the raw file.
+# The same dict is the HTTP query string and the manifest request_params.
+REQUEST_PARAMS = {"adjusted": "false", "include_otc": "false"}
 # The default window is about twenty years, and a date outside it raises.
 XNYS = xcals.get_calendar("XNYS", start="2000-01-01")
 
@@ -58,18 +59,17 @@ def parse_trade_date(value: str) -> date:
 
 
 def fetch_grouped_daily_bars(trade_date: date) -> dict:
-    # adjusted is forced false. Massive adjusts for splits unless this is set,
-    # and a later split would change history if those values were the raw file.
     url = (
-        "https://api.massive.com/v2/aggs/grouped/locale/"
-        f"{LOCALE}/market/{MARKET_TYPE}/{trade_date.isoformat()}"
+        "https://api.massive.com/v2/aggs/grouped/locale/us/market/stocks/"
+        f"{trade_date.isoformat()}"
     )
     headers = {
         "Authorization": f"Bearer {massive_api_key()}",
         "Accept-Encoding": "gzip",
     }
-    params = {"adjusted": "false", "include_otc": "false"}
-    response = SESSION.get(url, params=params, headers=headers, timeout=(10, 30))
+    response = SESSION.get(
+        url, params=REQUEST_PARAMS, headers=headers, timeout=(10, 30)
+    )
     response.raise_for_status()
     payload = response.json()
 
@@ -114,25 +114,12 @@ def build_bars_table(bars: list[dict]) -> pa.Table:
 
 def upload_partition(
     bucket: str,
-    prefix: str,
-    trade_date: date,
-    table: pa.Table,
-    extracted_at: datetime,
+    partition: str,
+    parquet_bytes: bytes,
+    manifest: dict,
 ) -> tuple[str, str]:
-    partition = f"{prefix}/trade_date={trade_date.isoformat()}"
     parquet_key = f"{partition}/bars.parquet"
     manifest_key = f"{partition}/manifest.json"
-
-    buffer = io.BytesIO()
-    pq.write_table(table, buffer)
-    manifest = {
-        "trade_date": trade_date.isoformat(),
-        "adjusted": False,
-        "locale": LOCALE,
-        "market_type": MARKET_TYPE,
-        "row_count": table.num_rows,
-        "extracted_at": extracted_at.isoformat(),
-    }
 
     client_kwargs = {}
     region = aws_region()
@@ -142,8 +129,8 @@ def upload_partition(
 
     # One PUT of the finished bytes to the final key. Nothing is deleted
     # first, so a failed request (which never gets here) leaves a previous
-    # good object in place. Re-running the same date replaces only this partition.
-    s3.put_object(Bucket=bucket, Key=parquet_key, Body=buffer.getvalue())
+    # good object in place. The manifest is written last as the commit marker.
+    s3.put_object(Bucket=bucket, Key=parquet_key, Body=parquet_bytes)
     s3.put_object(
         Bucket=bucket,
         Key=manifest_key,
@@ -167,8 +154,19 @@ def main(argv: list[str] | None = None) -> None:
     payload = fetch_grouped_daily_bars(trade_date)
     extracted_at = datetime.now(timezone.utc)
     table = build_bars_table(payload["results"])
+    buffer = io.BytesIO()
+    pq.write_table(table, buffer)
+    partition = f"{prefix}/trade_date={trade_date.isoformat()}"
+    manifest = {
+        "trade_date": trade_date.isoformat(),
+        "row_count": table.num_rows,
+        "extracted_at": extracted_at.isoformat(),
+        "request_id": payload.get("request_id"),
+        "api_status": payload["status"],
+        "request_params": REQUEST_PARAMS,
+    }
     parquet_key, manifest_key = upload_partition(
-        bucket, prefix, trade_date, table, extracted_at
+        bucket, partition, buffer.getvalue(), manifest
     )
     print(f"s3://{bucket}/{parquet_key} rows={table.num_rows}")
     print(f"s3://{bucket}/{manifest_key}")
