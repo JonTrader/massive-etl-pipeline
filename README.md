@@ -58,7 +58,7 @@ Airflow orders those steps. Extract, load, and the dbt models hold the business 
 GET https://api.massive.com/v2/aggs/grouped/locale/us/market/stocks/{date}
 ```
 
-Query parameters are `adjusted=false` and `include_otc=false`. The key is sent as `Authorization: Bearer` from `MASSIVE_API_KEY`, with `Accept-Encoding: gzip`. OTC names are left out. The pipeline does not call the API once per ticker.
+Query parameters are `adjusted=false` and `include_otc=false`. The key is sent as `Authorization: Bearer` from `MASSIVE_API_KEY`, with `Accept-Encoding: gzip`. The pipeline does not call the API once per ticker.
 
 These nine columns are always present:
 
@@ -71,7 +71,7 @@ These nine columns are always present:
 | `t` | Bar window start, epoch milliseconds | int |
 | `n` | Transaction count | int |
 
-`otc`, and any other key on a result, is kept when the payload includes it. The file does not carry `trade_date`, `adjusted`, or `extracted_at`. The partition path and `manifest.json` hold that landing metadata.
+Extra keys on a result are kept. The file does not carry `trade_date`, `adjusted`, or `extracted_at`. The partition path and `manifest.json` hold that landing metadata.
 
 ```text
 bronze/daily_bars/trade_date=YYYY-MM-DD/bars.parquet
@@ -88,8 +88,8 @@ Python does not filter prices. A null ticker, a null close, a high below the low
 
 Three schemas in the `MARKET` database, each with one job:
 
-- **`RAW.DAILY_BARS`** is the loaded copy of bronze. dbt does not build it. A reload is one transaction: delete that `trade_date`, `COPY INTO` the partition with `MATCH_BY_COLUMN_NAME`, and commit. A second run leaves one copy of the day.
-- **`STAGING`** is silver. Models cast types, keep one row per ticker and trade date (latest `extracted_at` wins), and write passing rows to `stg_daily_bars`. Failing rows go to `stg_daily_bars_quarantine`.
+- **`RAW.DAILY_BARS`** is the loaded copy of bronze. dbt does not build it. A reload is one transaction: delete that `trade_date`, `COPY INTO` the partition with `MATCH_BY_COLUMN_NAME` and `FORCE = TRUE`, and commit. `FORCE = TRUE` is required, because otherwise `COPY` skips a file it has already loaded and the delete wipes the day. Delete-then-copy keeps one landing per date. `trade_date` is derived in SQL from `t`. `extracted_at` comes from `INCLUDE_METADATA = (extracted_at = METADATA$FILE_LAST_MODIFIED)`.
+- **`STAGING`** is silver. Models cast types, keep one row per ticker and trade date, and write passing rows to `stg_daily_bars`. Failing rows go to `stg_daily_bars_quarantine`.
 - **`MARTS`** is gold, the only schema an analyst should query. `dbt build` rebuilds it from silver. Several years of daily bars are a small Snowflake workload, so the models stay full refreshes while they are still young.
 
 Gold is a star schema from daily bars alone:
@@ -164,7 +164,11 @@ macOS or Linux:
 
 A regular session lands thousands of symbols. A Saturday lands zero rows and a manifest with `row_count` 0.
 
-Runtime packages are pinned in `requirements.txt`. The `dev` group in `pyproject.toml` holds pytest, responses, moto, and Ruff for local checks. Install it with `python -m pip install --group dev` from the repository root.
+Runtime packages are pinned in `requirements.txt`. The `dev` group in `pyproject.toml` holds pytest, responses, moto, and Ruff. Install it with `python -m pip install --group dev` from the repository root.
+
+## Test and lint
+
+From the repository root, with the venv Python: `ruff check`, `ruff format --check`, and `pytest`.
 
 ## Repository
 
@@ -176,7 +180,7 @@ pyproject.toml             dev group (pytest, responses, moto, Ruff), Ruff and p
 .env.example               variable names, no secrets
 ```
 
-Still to come, on the design above: `load/copy_daily_bars.py`, `snowflake/bootstrap.sql` (database `MARKET`, `RAW.DAILY_BARS`, the Parquet file format, and the storage integration and stage), a dbt project under `transform/`, and `dags/daily_market_bars.py` with Docker Compose for local Airflow. dbt creates `STAGING` and `MARTS`.
+Still to come, on the design above: `load/copy_daily_bars.py`, `snowflake/bootstrap.sql` (database `MARKET`, `RAW.DAILY_BARS`, the Parquet file format, and the storage integration and stage), a dbt project under `transform/`, and `dags/daily_market_bars.py` with Docker Compose for local Airflow. Before the Airflow image is built, its supported Python and constraints file must be checked against this repo's 3.14 venv. dbt creates `STAGING` and `MARTS`.
 
 ## Out of scope
 
