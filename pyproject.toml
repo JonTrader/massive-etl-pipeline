@@ -1,3 +1,11 @@
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    "responses==0.26.3",
+    "moto[s3]==5.2.3",
+    "ruff==0.16.10",
+]
+
 [tool.ruff]
 line-length = 88
 target-version = "py314"

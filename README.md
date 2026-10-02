@@ -80,7 +80,7 @@ bronze/daily_bars/trade_date=YYYY-MM-DD/manifest.json
 
 `S3_PREFIX` overrides the `bronze/daily_bars` prefix. The manifest records the trade date, `adjusted=false`, locale, market type, row count, and `extracted_at`.
 
-A weekend or holiday still gets a zero-row Parquet file with the standard columns, so a closed session is different from a missing run. The finished object is written to its final key in one put. A failed request leaves the previous good object in place.
+A closed day still lands an empty partition with the standard columns, so a weekend or holiday is different from a missing run. An empty response on a trading session fails without uploading. The finished object is written to its final key in one put. A failed request leaves the previous good object in place.
 
 Python does not filter prices. A null ticker, a null close, a high below the low, or a negative volume is quarantined later in SQL. The S3 object remains the vendor payload.
 
@@ -164,7 +164,7 @@ macOS or Linux:
 
 A regular session lands thousands of symbols. A Saturday lands zero rows and a manifest with `row_count` 0.
 
-`requirements-dev.txt` installs pytest, responses, moto, and Ruff for local checks.
+Runtime packages are pinned in `requirements.txt`. The `dev` group in `pyproject.toml` holds pytest, responses, moto, and Ruff for local checks. Install it with `python -m pip install --group dev` from the repository root.
 
 ## Repository
 
@@ -172,8 +172,7 @@ A regular session lands thousands of symbols. A Saturday lands zero rows and a m
 extract/daily_bars.py      grouped daily request, Parquet write, S3 put
 extract/config.py          environment
 requirements.txt           runtime packages
-requirements-dev.txt       pytest, responses, moto, Ruff
-pyproject.toml             Ruff and pytest settings
+pyproject.toml             dev group (pytest, responses, moto, Ruff), Ruff and pytest settings
 .env.example               variable names, no secrets
 ```
 

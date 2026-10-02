@@ -1,13 +1,15 @@
 import argparse
 import io
 import json
-import time
 from datetime import date, datetime, timezone
 
 import boto3
+import exchange_calendars as xcals
 import pyarrow as pa
 import pyarrow.parquet as pq
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from .config import aws_region, massive_api_key, s3_bucket, s3_prefix
 
@@ -32,8 +34,21 @@ RAW_FIELD_TYPES = {field.name: field.type for field in EMPTY_BARS_SCHEMA}
 # Same values the request path and the manifest share.
 LOCALE = "us"
 MARKET_TYPE = "stocks"
-# One try plus three retries. 429 and 5xx get a short backoff.
-MAX_ATTEMPTS = 4
+# The default window is about twenty years, and a date outside it raises.
+XNYS = xcals.get_calendar("XNYS", start="2000-01-01")
+
+SESSION = requests.Session()
+SESSION.mount(
+    "https://",
+    HTTPAdapter(
+        max_retries=Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET"],
+        )
+    ),
+)
 
 
 def parse_trade_date(value: str) -> date:
@@ -43,7 +58,7 @@ def parse_trade_date(value: str) -> date:
         raise SystemExit(f"trade_date must be YYYY-MM-DD, got {value!r}") from None
 
 
-def fetch_grouped_daily_bars(trade_date: date) -> list:
+def fetch_grouped_daily_bars(trade_date: date) -> dict:
     # adjusted is forced false. Massive adjusts for splits unless this is set,
     # and a later split would change history if those values were the raw file.
     url = (
@@ -55,24 +70,32 @@ def fetch_grouped_daily_bars(trade_date: date) -> list:
         "Accept-Encoding": "gzip",
     }
     params = {"adjusted": "false", "include_otc": "false"}
+    response = SESSION.get(url, params=params, headers=headers, timeout=(10, 30))
+    response.raise_for_status()
+    payload = response.json()
 
-    for attempt in range(MAX_ATTEMPTS):
-        response = requests.get(url, params=params, headers=headers, timeout=(10, 10))
-        if response.status_code == 200:
-            break
-        retryable = response.status_code == 429 or response.status_code >= 500
-        if retryable and attempt < MAX_ATTEMPTS - 1:
-            time.sleep(0.5 * (2**attempt))
-            continue
+    status = payload.get("status")
+    if status not in {"OK", "DELAYED"}:
+        raise RuntimeError(f"grouped daily bars status {status!r} is not OK or DELAYED")
+
+    results = payload.get("results")
+    if results is None:
+        results = []
+    results_count = payload.get("resultsCount")
+    if results_count is None:
+        results_count = 0
+    if len(results) != results_count:
         raise RuntimeError(
-            f"GET {url} failed with HTTP {response.status_code} {response.reason}"
+            f"results length {len(results)} != resultsCount {results_count}"
         )
 
-    # No results key, or an empty list, is a closed market.
-    results = response.json().get("results")
-    if not results:
-        return []
-    return results
+    # A closed day still lands an empty file. Zero rows on an XNYS session
+    # means the vendor has not published yet, so fail and upload nothing.
+    if len(results) == 0 and XNYS.is_session(trade_date):
+        raise RuntimeError(f"no bars for trading session {trade_date.isoformat()}")
+
+    payload["results"] = results
+    return payload
 
 
 def build_bars_table(bars: list) -> pa.Table:
@@ -155,9 +178,9 @@ def main(argv: list[str] | None = None) -> None:
     bucket = s3_bucket()
     prefix = s3_prefix()
 
-    bars = fetch_grouped_daily_bars(trade_date)
+    payload = fetch_grouped_daily_bars(trade_date)
     extracted_at = datetime.now(timezone.utc)
-    table = build_bars_table(bars)
+    table = build_bars_table(payload["results"])
     parquet_key, manifest_key = upload_partition(
         bucket, prefix, trade_date, table, extracted_at
     )

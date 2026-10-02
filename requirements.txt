@@ -1,4 +1,5 @@
 boto3==1.43.103
+exchange_calendars==4.13.2
 pyarrow==25.0.1
 python-dotenv==1.2.3
 requests==2.34.2
