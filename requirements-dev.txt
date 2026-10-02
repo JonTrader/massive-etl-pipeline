@@ -1,0 +1,5 @@
+-r requirements.txt
+pytest==9.1.1
+responses==0.26.3
+moto[s3]==5.2.3
+ruff==0.16.10
