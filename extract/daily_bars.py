@@ -1,7 +1,7 @@
 import argparse
 import io
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import boto3
 import exchange_calendars as xcals
@@ -143,7 +143,7 @@ def main(argv: list[str] | None = None) -> None:
     bucket = s3_bucket()
 
     payload = fetch_grouped_daily_bars(args.trade_date)
-    extracted_at = datetime.now(timezone.utc)
+    extracted_at = datetime.now(UTC)
     table = build_bars_table(payload["results"])
     buffer = io.BytesIO()
     pq.write_table(table, buffer)
