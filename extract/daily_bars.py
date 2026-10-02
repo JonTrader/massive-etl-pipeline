@@ -11,7 +11,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from .config import aws_region, massive_api_key, s3_bucket, s3_prefix
+from .config import load_local_env, massive_api_key, s3_bucket
 
 # Standard grouped-daily columns. Types are storage only.
 # A closed session writes this schema with zero rows. A live payload
@@ -49,13 +49,6 @@ SESSION.mount(
         )
     ),
 )
-
-
-def parse_trade_date(value: str) -> date:
-    try:
-        return datetime.strptime(value, "%Y-%m-%d").date()
-    except ValueError:
-        raise SystemExit(f"trade_date must be YYYY-MM-DD, got {value!r}") from None
 
 
 def fetch_grouped_daily_bars(trade_date: date) -> dict:
@@ -121,11 +114,7 @@ def upload_partition(
     parquet_key = f"{partition}/bars.parquet"
     manifest_key = f"{partition}/manifest.json"
 
-    client_kwargs = {}
-    region = aws_region()
-    if region:
-        client_kwargs["region_name"] = region
-    s3 = boto3.client("s3", **client_kwargs)
+    s3 = boto3.client("s3")
 
     # One PUT of the finished bytes to the final key. Nothing is deleted
     # first, so a failed request (which never gets here) leaves a previous
@@ -141,24 +130,26 @@ def upload_partition(
 
 
 def main(argv: list[str] | None = None) -> None:
+    load_local_env()
     parser = argparse.ArgumentParser(
         description="Land one US stock-market date of unadjusted daily bars on S3."
     )
-    parser.add_argument("trade_date", help="Market date to extract, YYYY-MM-DD")
+    parser.add_argument(
+        "trade_date",
+        type=date.fromisoformat,
+        help="Market date to extract, YYYY-MM-DD",
+    )
     args = parser.parse_args(argv)
-
-    trade_date = parse_trade_date(args.trade_date)
     bucket = s3_bucket()
-    prefix = s3_prefix()
 
-    payload = fetch_grouped_daily_bars(trade_date)
+    payload = fetch_grouped_daily_bars(args.trade_date)
     extracted_at = datetime.now(timezone.utc)
     table = build_bars_table(payload["results"])
     buffer = io.BytesIO()
     pq.write_table(table, buffer)
-    partition = f"{prefix}/trade_date={trade_date.isoformat()}"
+    partition = f"bronze/daily_bars/trade_date={args.trade_date.isoformat()}"
     manifest = {
-        "trade_date": trade_date.isoformat(),
+        "trade_date": args.trade_date.isoformat(),
         "row_count": table.num_rows,
         "extracted_at": extracted_at.isoformat(),
         "request_id": payload.get("request_id"),

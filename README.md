@@ -78,7 +78,7 @@ bronze/daily_bars/trade_date=YYYY-MM-DD/bars.parquet
 bronze/daily_bars/trade_date=YYYY-MM-DD/manifest.json
 ```
 
-`S3_PREFIX` overrides the `bronze/daily_bars` prefix. The manifest records the trade date, row count, `extracted_at`, the vendor request id and status, and the `adjusted` and `include_otc` parameters that were sent.
+The prefix is `bronze/daily_bars`. The manifest records the trade date, row count, `extracted_at`, the vendor request id and status, and the `adjusted` and `include_otc` parameters that were sent.
 
 A closed day still lands an empty partition with the standard columns, so a weekend or holiday is different from a missing run. An empty response on a trading session fails without uploading. The finished object is written to its final key in one put. A failed request leaves the previous good object in place.
 
@@ -142,7 +142,7 @@ Airflow runs locally in Docker, with the UI on port 8080. Snowflake auth for Air
 
 ## Run the extract
 
-Requires Python 3.14, a Massive API key, and an S3 bucket the local AWS credentials can write to. Copy `.env.example` to `.env` and set `MASSIVE_API_KEY` and `S3_BUCKET`. `S3_PREFIX` defaults to `bronze/daily_bars`. `AWS_REGION` is optional.
+Requires Python 3.14, a Massive API key, and an S3 bucket the local AWS credentials can write to. Copy `.env.example` to `.env` and set `MASSIVE_API_KEY` and `S3_BUCKET`. Partitions land under `bronze/daily_bars`. `AWS_DEFAULT_REGION` is optional.
 
 ```text
 python -m venv .venv
