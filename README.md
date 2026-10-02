@@ -60,7 +60,7 @@ GET https://api.massive.com/v2/aggs/grouped/locale/us/market/stocks/{date}
 
 Query parameters are `adjusted=false` and `include_otc=false`. The key is sent as `Authorization: Bearer` from `MASSIVE_API_KEY`, with `Accept-Encoding: gzip`. OTC names are left out. The pipeline does not call the API once per ticker.
 
-Parquet columns are the raw JSON keys:
+These nine columns are always present:
 
 | Key | Meaning | Storage type |
 | --- | --- | --- |

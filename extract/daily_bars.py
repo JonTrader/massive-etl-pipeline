@@ -13,9 +13,9 @@ from urllib3.util.retry import Retry
 
 from .config import aws_region, massive_api_key, s3_bucket, s3_prefix
 
-# Grouped daily JSON keys, in API order. Types are storage only.
+# Standard grouped-daily columns. Types are storage only.
 # A closed session writes this schema with zero rows. A live payload
-# keeps whatever keys it actually sent, including ones not listed here.
+# always includes these columns, and keeps any other key the API sent.
 EMPTY_BARS_SCHEMA = pa.schema(
     [
         pa.field("T", pa.string()),
@@ -29,7 +29,6 @@ EMPTY_BARS_SCHEMA = pa.schema(
         pa.field("n", pa.int64()),
     ]
 )
-RAW_FIELD_TYPES = {field.name: field.type for field in EMPTY_BARS_SCHEMA}
 
 # Same values the request path and the manifest share.
 LOCALE = "us"
@@ -98,32 +97,19 @@ def fetch_grouped_daily_bars(trade_date: date) -> dict:
     return payload
 
 
-def build_bars_table(bars: list) -> pa.Table:
+def build_bars_table(bars: list[dict]) -> pa.Table:
     # A closed session still gets a zero-row file with the standard raw keys,
     # so a weekend or holiday is different from a day the job never ran.
     if not bars:
-        return pa.Table.from_pylist([], schema=EMPTY_BARS_SCHEMA)
-
-    names: list[str] = []
-    seen: set[str] = set()
-    for name in EMPTY_BARS_SCHEMA.names:
-        if any(name in bar for bar in bars):
-            names.append(name)
-            seen.add(name)
-    for bar in bars:
-        for name in bar:
-            if name not in seen:
-                names.append(name)
-                seen.add(name)
-
-    columns = []
-    for name in names:
-        values = [bar.get(name) for bar in bars]
-        if name in RAW_FIELD_TYPES:
-            columns.append(pa.array(values, type=RAW_FIELD_TYPES[name]))
+        return EMPTY_BARS_SCHEMA.empty_table()
+    table = pa.Table.from_struct_array(pa.array(bars))
+    for field in EMPTY_BARS_SCHEMA:
+        if field.name in table.column_names:
+            index = table.schema.get_field_index(field.name)
+            table = table.set_column(index, field, table[field.name].cast(field.type))
         else:
-            columns.append(pa.array(values))
-    return pa.Table.from_arrays(columns, names=names)
+            table = table.append_column(field, pa.nulls(table.num_rows, field.type))
+    return table
 
 
 def upload_partition(
