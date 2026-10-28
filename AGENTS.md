@@ -6,7 +6,7 @@ Rules for agents changing this repository. `README.md` is the system description
 
 Follow `plans/02-raw-load.md`. Open fixes are in `plans/improvements.md`. Phase status and the decision log are in `plans/00-roadmap.md`.
 
-Phase 1 extract is committed on `main`. `load/copy_daily_bars.py` and `snowflake/bootstrap.sql` exist only in the working tree on `snowflake-raw`. They are not committed and not covered by tests. A live trading-day load succeeded. A closed-day load and the zero-row Parquet `COPY` result shape have not been confirmed. Do not describe Phase 2 as done. dbt and Airflow are not started.
+Phase 1 extract is committed on `main`. Phase 2 bootstrap, loader, and loader tests are committed on `snowflake-raw`. A live trading-day load and a live closed-day load (`2026-10-25`) succeeded. Zero-row `COPY` must match one `LOADED` row with `rows_loaded` 0; that check and `first_error` on non-`LOADED` statuses are in the loader (uncommitted Step 4). Still open: `QUOTED_IDENTIFIERS_IGNORE_CASE`, docs finish. Do not describe Phase 2 as done. dbt and Airflow are not started.
 
 `.env.example` lists `AWS_DEFAULT_REGION` and the Snowflake names. It does not list access keys. The code reads `AWS_DEFAULT_REGION`. boto3 credentials come from the normal chain (process environment, then `~/.aws/credentials`, and so on). This developer's machine has no shared AWS credentials file; local runs load `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` from the private gitignored `.env`. Deployed runs are expected to set those in the environment the same way. Do not put access keys in `.env.example`.
 
@@ -45,7 +45,7 @@ From the repository root, with the venv Python: `ruff check`, `ruff format --che
 Production behavior matters more than speed of implementation. Prefer the simplest code that fully meets the current requirement, and prefer code a reader can follow in one pass.
 
 - Do not over-engineer. No extra config knobs, wrapper helpers, classes, or plugin hooks. A function that is called once can stay inline.
-- Comments explain why, not what the next line does. Worth keeping: why `adjusted` is false, why a closed day still gets a file, why an empty trading session must fail, why the manifest is written last, why `FORCE = TRUE` is set, why `MATCH_BY_COLUMN_NAME` is `CASE_SENSITIVE`, why `trade_date` is nullable and set after `COPY`, why a zero-row `COPY` result shape is not asserted, and why parquet `LastModified` is compared to the manifest object.
+- Comments explain why, not what the next line does. Worth keeping: why `adjusted` is false, why a closed day still gets a file, why an empty trading session must fail, why the manifest is written last, why `FORCE = TRUE` is set, why `MATCH_BY_COLUMN_NAME` is `CASE_SENSITIVE`, why `trade_date` is nullable and set after `COPY`, why a zero-row `COPY` must assert `LOADED` with `rows_loaded` 0, and why parquet `LastModified` is compared to the manifest object.
 - Use the libraries already pinned. Check the installed package before writing a replacement or adding a dependency.
 - Do not add the `massive` package. Do not call the API once per ticker.
 
@@ -82,7 +82,7 @@ Production behavior matters more than speed of implementation. Prefer the simple
 - `FORCE = TRUE` is required. Without it, `COPY` skips a file it has already loaded and the `DELETE` wipes the day.
 - `INCLUDE_METADATA` supplies bar-row `extracted_at` from the object's last-modified time. It is not a Parquet column. `DAILY_BARS_LOADS.extracted_at` is the manifest clock. They are different values.
 - `MATCH_BY_COLUMN_NAME` cannot take a `SELECT`, so `COPY` inserts `trade_date` as null. The column stays nullable. A `NOT NULL` constraint would reject the load. The next statement sets `trade_date` with `TO_DATE(TO_TIMESTAMP_NTZ("t", 3))` only for null rows whose derived date is the requested `trade_date`. A stray null on another day must not be rewritten and must not fail this load. `t` is epoch milliseconds at the 16:00 New York close (20:00 or 21:00 UTC), so its UTC calendar date is the session date. Do not shift it by a day.
-- For a positive `row_count`, require one `COPY` result with status `LOADED` and `rows_loaded` equal to the manifest. For `row_count` 0, do not assert the result shape. Fail a closed day only when status is `LOAD_FAILED`, `LOAD_SKIPPED`, or `PARTIALLY_LOADED`. The table count decides the commit.
+- For any `row_count` (including 0), require one `COPY` result with status `LOADED` and `rows_loaded` equal to the manifest. On a non-`LOADED` status, raise with `first_error` from the result row in the message.
 - The `UPDATE` count must equal the manifest `row_count`. Read the result column. `cursor.rowcount` stays empty when the connector returns Arrow. Then `COUNT_IF(trade_date = date)` must equal `row_count`. Do not require a table-wide zero of null `trade_date` values.
 - `MERGE` one audit row into `MARKET.RAW.DAILY_BARS_LOADS` for the date, including a closed day with `row_count` 0, then `COMMIT`. Any failure `ROLLBACK`s and raises `RuntimeError`. Close the connection in `finally`. The previous rows for that date stay.
 - Do not dedupe by latest `extracted_at`. Delete-then-copy keeps one landing per date. Do not rename vendor columns. Extra Parquet keys stay in bronze and are not loaded. Do not enable schema evolution.

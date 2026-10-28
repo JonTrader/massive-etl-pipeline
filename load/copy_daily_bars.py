@@ -23,7 +23,6 @@ from extract.config import load_local_env, s3_bucket  # noqa: E402
 from extract.daily_bars import REQUEST_PARAMS  # noqa: E402
 
 _MISSING_S3_CODES = {"404", "NoSuchKey", "NotFound"}
-_FAILED_COPY_STATUSES = {"LOAD_FAILED", "LOAD_SKIPPED", "PARTIALLY_LOADED"}
 _SNOWFLAKE_SETTINGS = (
     "SNOWFLAKE_ACCOUNT",
     "SNOWFLAKE_USER",
@@ -185,34 +184,33 @@ def copy_daily_bars(trade_date: date) -> None:
                 """
             )
             copy_rows = cursor.fetchall()
-            if row_count > 0:
-                if len(copy_rows) != 1:
-                    raise RuntimeError(
-                        f"copy status returned {len(copy_rows)} rows for {bars_file}"
-                    )
-                status = _column_value(copy_rows[0], "status")
-                if status != "LOADED":
-                    raise RuntimeError(f"copy status {status!r} for {bars_file}")
-                try:
-                    loaded = int(_column_value(copy_rows[0], "rows_loaded"))
-                except (TypeError, ValueError) as err:
-                    raise RuntimeError(
-                        f"row count mismatch: COPY rows_loaded is not an int "
-                        f"for {bars_file}"
-                    ) from err
-                if loaded != row_count:
-                    raise RuntimeError(
-                        f"row count mismatch: COPY loaded {loaded} rows, "
-                        f"manifest row_count is {row_count}"
-                    )
-            else:
-                # A zero-row Parquet file's COPY result has not been confirmed
-                # on a real account, so the result shape is not asserted. The
-                # table count below decides whether this closed day loaded.
-                for copy_row in copy_rows:
-                    status = _column_value(copy_row, "status")
-                    if status in _FAILED_COPY_STATUSES:
-                        raise RuntimeError(f"copy status {status!r} for {bars_file}")
+            # A closed day's empty Parquet still returns one LOADED row with
+            # rows_loaded 0 on this account. Asserting that shape (same as a
+            # positive load) keeps a skipped or partial copy from merging an
+            # audit row that claims the holiday loaded.
+            if len(copy_rows) != 1:
+                raise RuntimeError(
+                    f"copy status returned {len(copy_rows)} rows for {bars_file}"
+                )
+            status = _column_value(copy_rows[0], "status")
+            if status != "LOADED":
+                first_error = _column_value(copy_rows[0], "first_error")
+                raise RuntimeError(
+                    f"copy status {status!r} for {bars_file}: "
+                    f"first_error={first_error!r}"
+                )
+            try:
+                loaded = int(_column_value(copy_rows[0], "rows_loaded"))
+            except (TypeError, ValueError) as err:
+                raise RuntimeError(
+                    f"row count mismatch: COPY rows_loaded is not an int "
+                    f"for {bars_file}"
+                ) from err
+            if loaded != row_count:
+                raise RuntimeError(
+                    f"row count mismatch: COPY loaded {loaded} rows, "
+                    f"manifest row_count is {row_count}"
+                )
 
             # MATCH_BY_COLUMN_NAME cannot take a SELECT, so COPY inserts
             # trade_date as null and this statement sets it. Limit the UPDATE

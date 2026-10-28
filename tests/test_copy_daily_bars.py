@@ -326,8 +326,16 @@ def test_manifest_failures_issue_no_sql(setup: str) -> None:
     [
         ({"fail_on": "copy"}, "copy failed|snowflake load failed"),
         (
-            {"copy_rows": [{"status": "LOAD_SKIPPED", "rows_loaded": 0}]},
-            "copy status",
+            {
+                "copy_rows": [
+                    {
+                        "status": "LOAD_SKIPPED",
+                        "rows_loaded": 0,
+                        "first_error": "already loaded",
+                    }
+                ]
+            },
+            r"copy status 'LOAD_SKIPPED'.*first_error='already loaded'",
         ),
         (
             {
@@ -377,12 +385,48 @@ def test_snowflake_failures_roll_back_without_commit(
 
 
 @mock_aws
-def test_zero_row_rejects_failed_copy_status() -> None:
+@pytest.mark.parametrize(
+    ("copy_rows", "match"),
+    [
+        ([], r"copy status returned 0 rows"),
+        (
+            [{"status": "LOAD_FAILED", "rows_loaded": 0, "first_error": "bad parquet"}],
+            r"copy status 'LOAD_FAILED'.*first_error='bad parquet'",
+        ),
+        (
+            [{"status": "LOADED", "rows_loaded": 1}],
+            "row count mismatch",
+        ),
+    ],
+)
+def test_zero_row_copy_failures_roll_back_without_merge(
+    copy_rows: list[dict], match: str
+) -> None:
     _put_landing(trade_date=SATURDAY, row_count=0)
+    cursor = FakeCursor(copy_rows=copy_rows, updated=0, dated=0)
+    connection = FakeConnection(cursor)
+
+    with patch.object(
+        load_mod.snowflake.connector,
+        "connect",
+        return_value=connection,
+    ):
+        with pytest.raises(RuntimeError, match=match):
+            copy_daily_bars(SATURDAY)
+
+    assert connection.committed is False
+    assert connection.rolled_back is True
+    assert connection.closed is True
+    assert "merge" not in _kinds(cursor)
+
+
+@mock_aws
+def test_non_loaded_copy_includes_missing_first_error() -> None:
+    _put_landing(row_count=1)
     cursor = FakeCursor(
-        copy_rows=[{"status": "LOAD_FAILED", "rows_loaded": 0}],
-        updated=0,
-        dated=0,
+        copy_rows=[{"status": "PARTIALLY_LOADED", "rows_loaded": 0}],
+        updated=1,
+        dated=1,
     )
     connection = FakeConnection(cursor)
 
@@ -391,11 +435,15 @@ def test_zero_row_rejects_failed_copy_status() -> None:
         "connect",
         return_value=connection,
     ):
-        with pytest.raises(RuntimeError, match="copy status"):
-            copy_daily_bars(SATURDAY)
+        with pytest.raises(
+            RuntimeError,
+            match=r"copy status 'PARTIALLY_LOADED'.*first_error=None",
+        ):
+            copy_daily_bars(FRIDAY)
 
     assert connection.committed is False
     assert connection.rolled_back is True
+    assert "merge" not in _kinds(cursor)
 
 
 def test_missing_snowflake_setting_raises(monkeypatch: pytest.MonkeyPatch) -> None:
