@@ -215,22 +215,25 @@ def copy_daily_bars(trade_date: date) -> None:
                         raise RuntimeError(f"copy status {status!r} for {bars_file}")
 
             # MATCH_BY_COLUMN_NAME cannot take a SELECT, so COPY inserts
-            # trade_date as null and this statement sets it. t is epoch
-            # milliseconds at UTC midnight. NTZ and scale 3 keep that midnight
-            # on the same calendar day. A timezone-aware timestamp can move it
-            # onto the previous day.
+            # trade_date as null and this statement sets it. Limit the UPDATE
+            # to null rows whose derived date is this trade_date so a stray
+            # null on another day cannot rewrite foreign rows or fail a good
+            # load. t is epoch milliseconds at the 16:00 New York close; NTZ
+            # and scale 3 yield that close's UTC calendar date, which is the
+            # session date.
             cursor.execute(
                 """
                 UPDATE MARKET.RAW.DAILY_BARS
                 SET trade_date = TO_DATE(TO_TIMESTAMP_NTZ("t", 3))
                 WHERE trade_date IS NULL
-                """
+                  AND TO_DATE(TO_TIMESTAMP_NTZ("t", 3)) = %(trade_date)s
+                """,
+                {"trade_date": trade_date},
             )
             # Read the result column. cursor.rowcount stays empty when the
             # connector returns this statement as Arrow instead of a JSON
-            # rowset. A pre-existing null trade_date on another day would be
-            # rewritten here and then committed, so the count has to equal
-            # the rows this landing inserted.
+            # rowset. A null whose t maps to this same date still raises
+            # updated above row_count and rolls back.
             updated_row = cursor.fetchone()
             if updated_row is None:
                 raise RuntimeError("row count mismatch: UPDATE returned no row")
@@ -248,8 +251,7 @@ def copy_daily_bars(trade_date: date) -> None:
 
             cursor.execute(
                 """
-                SELECT COUNT_IF(trade_date = %(trade_date)s) AS dated,
-                       COUNT_IF(trade_date IS NULL) AS undated
+                SELECT COUNT_IF(trade_date = %(trade_date)s) AS dated
                 FROM MARKET.RAW.DAILY_BARS
                 """,
                 {"trade_date": trade_date},
@@ -259,15 +261,14 @@ def copy_daily_bars(trade_date: date) -> None:
                 raise RuntimeError("trade_date check failed: count returned no row")
             try:
                 dated = int(_column_value(count_row, "dated"))
-                undated = int(_column_value(count_row, "undated"))
             except (TypeError, ValueError) as err:
                 raise RuntimeError(
                     "trade_date check failed: count result is missing"
                 ) from err
-            if dated != row_count or undated != 0:
+            if dated != row_count:
                 raise RuntimeError(
                     "trade_date check failed: "
-                    f"dated={dated} undated={undated} row_count={row_count}"
+                    f"dated={dated} row_count={row_count}"
                 )
 
             cursor.execute(
