@@ -1,109 +1,72 @@
 # Agent notes
 
-Rules for agents changing this repository. `README.md` is the system description. Phase notes and the decision log live under `plans/`. Follow the contracts in this file when a plan and this file disagree; then update both.
+Rules for agents changing this repository. `README.md` is the system description. Phase notes, open fixes, and the decision log live under `plans/`. When a plan and this file disagree, follow this file, then update both.
 
-## Current work
+## Project overview
 
-Follow `plans/02-raw-load.md`. Open fixes are in `plans/improvements.md`. Phase status and the decision log are in `plans/00-roadmap.md`.
+Daily US equity bars: one Massive grouped request per market date lands as Parquet plus a manifest on S3; Snowflake loads that date into `MARKET.RAW`. dbt (silver/gold) and Airflow are planned and not started. Cleansing belongs in SQL, not in the extract.
 
-Phase 1 extract is committed on `main`. Phase 2 RAW load is on `snowflake-raw`: bootstrap, loader, tests, live trading-day and closed-day loads, zero-row `COPY` assertions, and `QUOTED_IDENTIFIERS_IGNORE_CASE = FALSE`. Docs status matches. Commit of the Step 5/6 working-tree changes when asked. dbt and Airflow are not started.
+| Path | Role |
+| --- | --- |
+| `extract/` | Land one date on S3 (`python -m extract.daily_bars`) |
+| `load/` | Reload one date into Snowflake (`python -m load.copy_daily_bars`) |
+| `snowflake/` | Bootstrap SQL |
+| `tests/` | pytest |
+| `plans/` | Roadmap, phase notes, improvements |
 
-`.env.example` lists `AWS_DEFAULT_REGION` and the Snowflake names. It does not list access keys. The code reads `AWS_DEFAULT_REGION`. boto3 credentials come from the normal chain (process environment, then `~/.aws/credentials`, and so on). This developer's machine has no shared AWS credentials file; local runs load `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` from the private gitignored `.env`. Deployed runs are expected to set those in the environment the same way. Do not put access keys in `.env.example`.
+There is no `src/`, `lib/`, or `utils/`. Search those packages above before adding a function. `extract/__init__.py` is empty; keep it empty. Do not add `load/__init__.py` or other package inits.
 
-## Layout
+Current phase and status: follow `plans/00-roadmap.md` and the active phase note it points to. Do not implement later phases while that note is the current step. Procedure detail for extract and load stays in `plans/01-extract.md` and `plans/02-raw-load.md` - do not weaken those contracts in code.
 
-- `extract/` lands one date on S3. `load/` reloads that date into Snowflake. `snowflake/` is bootstrap SQL. `tests/` is pytest. `plans/` is the roadmap and phase notes.
-- There is no `src/`, `lib/`, or `utils/`. Search `extract/`, `load/`, `snowflake/`, and `tests/` before adding a function.
-- Modules run as `python -m extract.daily_bars` and `python -m load.copy_daily_bars`. `extract/__init__.py` is empty; keep it empty. Do not add `load/__init__.py` or any other package init.
+## Build and test commands
 
-## Setup and installs
+Use the existing `.venv` only. Do not create a second venv, use system Python, add `uv`, a lock file, a `[project]` table, or a `[build-system]`. Do not `pip install .` or `-e .`.
 
-Use the existing `.venv` only. Do not create a second venv or use system Python. Do not add `uv`, a lock file, a `[project]` table, or a `[build-system]`. Do not `pip install .` or `-e .`.
-
-From the repository root, with the venv Python (`.venv\Scripts\python.exe` on Windows, `.venv/bin/python` on macOS or Linux):
+Interpreter is Python 3.14 (`pyproject.toml` `target-version`). From the repository root, with the venv Python (`.venv\Scripts\python.exe` on Windows, `.venv/bin/python` on macOS or Linux):
 
 ```text
 python -m pip install -r requirements.txt
 python -m pip install --group dev
 ```
 
-The group install does not include runtime, so run both.
+The group install does not include runtime, so run both. `requirements.txt` is the runtime source of truth (exact `==` pins). Dev tools (pytest, responses, moto[s3], Ruff) are the `dev` group in `[dependency-groups]` in `pyproject.toml`. There is no `requirements-dev.txt`. Bump a runtime pin in `requirements.txt` and a dev pin in `pyproject.toml`.
 
-- `requirements.txt` is the runtime source of truth (exact `==` pins). Dev tools (pytest, responses, moto[s3], Ruff) are the `dev` group in `[dependency-groups]` in `pyproject.toml`. There is no `requirements-dev.txt`.
-- Bump a runtime pin in `requirements.txt` and a dev pin in `pyproject.toml`.
-- The interpreter is Python 3.14 (`pyproject.toml` `target-version`).
+Verify from the repository root with the venv Python:
 
-## Verify
+```text
+ruff check
+ruff format --check
+pytest
+```
 
-From the repository root, with the venv Python: `ruff check`, `ruff format --check`, and `pytest`. Fix lint and test failures you find.
+Fix lint and test failures you find, including ones you did not cause.
 
-- An extract landing change needs a test in `tests/test_daily_bars.py`.
-- A load change needs a test in `tests/test_copy_daily_bars.py`. That file is not written yet. Mock S3 with moto and mock `snowflake.connector.connect`. Do not open a live bucket, API, or Snowflake account from pytest.
+## Code style guidelines
 
-## Standards
+Prefer the simplest code that fully meets the current requirement and that a reader can follow in one pass. Production behavior matters more than speed of implementation.
 
-Production behavior matters more than speed of implementation. Prefer the simplest code that fully meets the current requirement, and prefer code a reader can follow in one pass.
-
-- Do not over-engineer. No extra config knobs, wrapper helpers, classes, or plugin hooks. A function that is called once can stay inline.
-- Comments explain why, not what the next line does. Worth keeping: why `adjusted` is false, why a closed day still gets a file, why an empty trading session must fail, why the manifest is written last, why `FORCE = TRUE` is set, why `MATCH_BY_COLUMN_NAME` is `CASE_SENSITIVE`, why `trade_date` is nullable and set after `COPY`, why a zero-row `COPY` must assert `LOADED` with `rows_loaded` 0, and why parquet `LastModified` is compared to the manifest object.
-- Use the libraries already pinned. Check the installed package before writing a replacement or adding a dependency.
+- No extra config knobs, wrapper helpers, classes, or plugin hooks. A function called once can stay inline.
+- Comments explain why, not what the next line does.
+- Use libraries already pinned. Check the installed package before writing a replacement or adding a dependency.
 - Do not add the `massive` package. Do not call the API once per ticker.
+- Call `load_local_env()` once at the start of `main`, before any getter.
+- Database, schema, tables, stage, file format, and the S3 prefix `bronze/daily_bars` stay hard-coded where the code already hard-codes them.
+- Vendor column names stay as landed until staging. Do not rename in the extract or loader.
+- Update this file when a project decision changes. Update the relevant `plans/` file and `plans/00-roadmap.md` in the same change.
+- Keep `README.md` status honest (Built, In progress, Planned). Lead with the system, the grain, and the design decisions. Do not turn it into a tutorial or a tool glossary.
 
-## Docs
+## Testing instructions
 
-- Update this file when a project decision changes.
-- Update the relevant `plans/` file and the decision log in `plans/00-roadmap.md` in the same change.
-- Keep `README.md` status honest: Built, In progress, Planned. Lead with the system, the grain, and the design decisions. Do not turn it into a tutorial or a tool glossary.
-- Do not read `.env`. It holds secrets.
+- Extract landing changes: add coverage in `tests/test_daily_bars.py`.
+- Load changes: add coverage in `tests/test_copy_daily_bars.py`. Mock S3 with moto and mock `snowflake.connector.connect`.
+- Do not open a live bucket, Massive API, or Snowflake account from pytest.
+- Prefer tests that lock the contracts in `plans/` (manifest checks, delete-then-copy shape, zero-row `COPY`, session parameters) over brittle internal structure.
 
-## Extract
+## Security considerations
 
-`python -m extract.daily_bars YYYY-MM-DD` lands one US stock-market date as Parquet on S3. Cleansing belongs in SQL. Phase note: `plans/01-extract.md`.
-
-- One grouped GET with `requests`: `https://api.massive.com/v2/aggs/grouped/locale/us/market/stocks/{date}`, query `adjusted=false` and `include_otc=false`, headers `Authorization: Bearer {MASSIVE_API_KEY}` and `Accept-Encoding: gzip`. Do not loop tickers. Call `load_local_env()` once at the start of `main`, before any getter.
-- `adjusted` is forced false. Drop no rows, rename no fields, and filter nothing.
-- The nine columns `T`, `o`, `h`, `l`, `c`, `v`, `vw`, `t`, and `n` are always present. Types: `T` string, `o`/`h`/`l`/`c`/`v`/`vw` float, `t`/`n` int. Keep extra keys. Do not add `trade_date`, `adjusted`, or `extracted_at` to the parquet.
-- Manifest fields: `trade_date`, `row_count`, `extracted_at`, `request_id`, `api_status`, and `request_params` (`adjusted`, `include_otc`). A zero-row file uses the same columns. Keys: `bronze/daily_bars/trade_date=YYYY-MM-DD/bars.parquet` and `manifest.json`. The prefix `bronze/daily_bars` is hard-coded.
-- Region is `AWS_DEFAULT_REGION`. boto3 reads that name. A blank value is unset. Do not add `AWS_REGION` or an `S3_PREFIX`.
-- `status` must be `OK` or `DELAYED`, and `len(results)` must equal `resultsCount`. A missing `resultsCount` counts as 0. A missing or null `results` counts as an empty list. Otherwise raise `RuntimeError` and do not upload.
-- A non-session day with no rows still writes a zero-row file and a manifest with `row_count` 0. An empty XNYS session raises `RuntimeError` starting with `no bars for trading session` and does not upload. Build the XNYS calendar once at import with start `2000-01-01`.
-- One PUT of the parquet to the final key, then the manifest, which is the commit marker. A non-200 response raises and does not upload, so a previous good object stays in place.
-- Retries: `requests.Session` mounted with `HTTPAdapter(max_retries=Retry(total=3, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504], allowed_methods=["GET"]))`, then `response.raise_for_status()`. Timeout is `(10, 30)`.
-
-## Load
-
-`python -m load.copy_daily_bars YYYY-MM-DD` reloads one landed date. The procedure is `plans/02-raw-load.md`. Do not weaken the rules below. Call `load_local_env()` once at the start of `main`, before any getter.
-
-- Reuse `s3_bucket()` and `REQUEST_PARAMS`. Required settings: `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PRIVATE_KEY_PATH`, `SNOWFLAKE_WAREHOUSE`, `SNOWFLAKE_ROLE`. Pass `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE` only when it is non-blank. Missing required values raise `RuntimeError`. Database, schema, tables, stage, and file format stay hard-coded.
-- Authenticator is `SNOWFLAKE_JWT` with `private_key_file`. `autocommit` is false. Cursor is `DictCursor`. Database is `MARKET`, schema is `RAW`. Session parameters `QUERY_TAG = daily_bars_load`, `STATEMENT_TIMEOUT_IN_SECONDS = 600`, and `QUOTED_IDENTIFIERS_IGNORE_CASE = FALSE` are hard-coded.
-- Read `manifest.json` and head `bars.parquet` before any SQL. Raise `RuntimeError` and run no SQL when either object is missing, `trade_date` or `request_params` disagree with the request, `row_count` is not an int >= 0, `api_status` is blank, `extracted_at` is not a timestamp, `request_id` is present and not a string, `LastModified` is missing, or the parquet `LastModified` is later than the manifest object's. Equal timestamps are a finished landing. A later parquet means a re-extract is in progress. The manifest `extracted_at` field is set before either upload, so do not compare it to the parquet `LastModified`.
-- One transaction: `DELETE` that `trade_date`, then `COPY INTO MARKET.RAW.DAILY_BARS` from `@MARKET.RAW.BRONZE_DAILY_BARS`. `FILES` is that date's `bars.parquet` only. Clauses: `MATCH_BY_COLUMN_NAME = CASE_SENSITIVE`, `INCLUDE_METADATA = (extracted_at = METADATA$FILE_LAST_MODIFIED)`, `FORCE = TRUE`, `ON_ERROR = ABORT_STATEMENT`. Do not `PURGE`. Do not use a pattern that can read `manifest.json`.
-- `CASE_SENSITIVE` is required because the file has both `T` and `t`. Unquoted Snowflake names fold to uppercase, so those columns are created quoted.
-- `FORCE = TRUE` is required. Without it, `COPY` skips a file it has already loaded and the `DELETE` wipes the day.
-- `INCLUDE_METADATA` supplies bar-row `extracted_at` from the object's last-modified time. It is not a Parquet column. `DAILY_BARS_LOADS.extracted_at` is the manifest clock. They are different values.
-- `MATCH_BY_COLUMN_NAME` cannot take a `SELECT`, so `COPY` inserts `trade_date` as null. The column stays nullable. A `NOT NULL` constraint would reject the load. The next statement sets `trade_date` with `TO_DATE(TO_TIMESTAMP_NTZ("t", 3))` only for null rows whose derived date is the requested `trade_date`. A stray null on another day must not be rewritten and must not fail this load. `t` is epoch milliseconds at the 16:00 New York close (20:00 or 21:00 UTC), so its UTC calendar date is the session date. Do not shift it by a day.
-- For any `row_count` (including 0), require one `COPY` result with status `LOADED` and `rows_loaded` equal to the manifest. On a non-`LOADED` status, raise with `first_error` from the result row in the message.
-- The `UPDATE` count must equal the manifest `row_count`. Read the result column. `cursor.rowcount` stays empty when the connector returns Arrow. Then `COUNT_IF(trade_date = date)` must equal `row_count`. Do not require a table-wide zero of null `trade_date` values.
-- `MERGE` one audit row into `MARKET.RAW.DAILY_BARS_LOADS` for the date, including a closed day with `row_count` 0, then `COMMIT`. Any failure `ROLLBACK`s and raises `RuntimeError`. Close the connection in `finally`. The previous rows for that date stay.
-- Do not dedupe by latest `extracted_at`. Delete-then-copy keeps one landing per date. Do not rename vendor columns. Extra Parquet keys stay in bronze and are not loaded. Do not enable schema evolution.
-- Do not bump the `pyarrow` pin to satisfy the connector's pandas extra. This loader does not use that extra. The extract keeps its own pin.
-- The loader does not lock. Overlapping runs for the same date are forbidden. Airflow enforces one active run per date when that phase exists.
-- Bootstrap creates `MARKET.RAW.DAILY_BARS`, `MARKET.RAW.DAILY_BARS_LOADS`, file format `MARKET.RAW.DAILY_BARS_PARQUET` (no `USE_LOGICAL_TYPE`), storage integration `MARKET_LAKE`, and stage `MARKET.RAW.BRONZE_DAILY_BARS`. Before `CREATE TABLE`, set `QUOTED_IDENTIFIERS_IGNORE_CASE = FALSE` so quoted `"T"` and `"t"` stay distinct. The stage name must not collide with the table stage `@%DAILY_BARS`. The integration location is `s3://<bucket>/bronze/daily_bars/`. Its IAM policy is read-only. The extract writer is a different identity. Do not create the warehouse. Replace placeholders before the account-specific statements. `IF NOT EXISTS` will not repair an integration or stage created while a placeholder was still in it.
-
-## Schedule
-
-The daily DAG is not built. Phase note: `plans/04-airflow.md`.
-
-The daily DAG runs at 06:00 America/New_York, Tuesday through Saturday (`0 6 * * 2-6`), and lands the previous day. `trade_date` is an explicit DAG parameter that defaults to the run's New York date minus one day. Do not derive it from Airflow's `logical_date`.
-
-dbt source freshness reads `DAILY_BARS_LOADS.extracted_at` and warns after about 3 days. A closed day writes an audit row and no bar rows, so freshness does not read `DAILY_BARS`. A Monday holiday can stretch the gap from Saturday 06:00 to Wednesday 06:00, which is past that warning. That edge is known and not changed.
-
-## Later phases
-
-Do not implement these while `plans/02-raw-load.md` is the current step.
-
-dbt (`plans/03-dbt-transform.md`): `RAW` is not a dbt model. Silver is `STAGING`, gold is `MARTS`. Override `generate_schema_name` so those names are not concatenated onto the target schema. Quarantine null ticker, null close, high below low, and negative volume. Full refresh. Do not add incremental models or surrogate keys yet. Do not dedupe staging by `extracted_at`. Freshness is the schedule rule above.
-
-Airflow (`plans/04-airflow.md`): the DAG stays thin and calls the same extract and load functions, then `dbt build`. Backfill walks dates one at a time. Secrets stay in the environment. The dbt profile reads them with `env_var`. Snowflake auth is key-pair. Before building the Airflow image, check its supported Python and constraints file against this repo's 3.14 venv.
-
-The backfill DAG is not implemented.
+- Do not read `.env`. It holds secrets. Do not commit it, keys (`*.p8`, `*.pem`), or other credentials.
+- `.env.example` lists names such as `AWS_DEFAULT_REGION` and the Snowflake settings. It must not list access keys or other secret values.
+- Runtime secrets come from the environment: `MASSIVE_API_KEY`, AWS credentials via the normal boto3 chain, Snowflake key-pair path and optional passphrase. This machine has no shared AWS credentials file; local runs load AWS keys from the private gitignored `.env`. Deployed runs set the same names in the environment.
+- Region is `AWS_DEFAULT_REGION` only. Do not add `AWS_REGION`.
+- Snowflake auth is key-pair (`SNOWFLAKE_JWT`). The storage integration IAM policy is read-only; the extract writer is a different identity.
+- Do not print or log secret values.
