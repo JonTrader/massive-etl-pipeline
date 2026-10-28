@@ -1,23 +1,25 @@
 # Agent notes
 
-Rules for agents changing this repository. `README.md` is the system description. Phase notes, open fixes, and the decision log live under `plans/`. When a plan and this file disagree, follow this file, then update both.
+Rules for agents changing this repository. `README.md` is the system description. Phase status, checklists, open fixes, and the decision log live under `plans/` only. Do not update `README.md` or this file on every plan step. Update them when a durable project decision, layout, command, style rule, test rule, or security rule changes - or when finishing a phase needs a short README status pass.
+
+When a plan and this file disagree on an engineering contract, follow this file, then update both. When only phase progress changes, update `plans/` alone.
 
 ## Project overview
 
-Daily US equity bars: one Massive grouped request per market date lands as Parquet plus a manifest on S3; Snowflake loads that date into `MARKET.RAW`. dbt transform Phase 3 Step 2 sources are in place under `transform/` (`sources.yml` for `RAW.DAILY_BARS` and freshness on `RAW.DAILY_BARS_LOADS`; staging/mart models not written yet; next is Step 3). Airflow is planned and not started. Cleansing belongs in SQL, not in the extract.
+Daily US equity bars: one Massive grouped request per market date lands as Parquet plus a manifest on S3; Snowflake loads that date into `MARKET.RAW`; dbt builds silver (`STAGING`) and gold (`MARTS`); Airflow is planned to schedule extract, load, then `dbt build`. Cleansing belongs in SQL, not in the extract.
 
 | Path | Role |
 | --- | --- |
 | `extract/` | Land one date on S3 (`python -m extract.daily_bars`) |
 | `load/` | Reload one date into Snowflake (`python -m load.copy_daily_bars`) |
-| `transform/` | dbt project (`market_bars`); sources declared; staging/mart models not written yet |
+| `transform/` | dbt project (`market_bars`); run from here with `--profiles-dir .` |
 | `snowflake/` | Bootstrap SQL |
 | `tests/` | pytest |
-| `plans/` | Roadmap, phase notes, improvements |
+| `plans/` | Roadmap, phase notes, improvements (current step lives here) |
 
-There is no `src/`, `lib/`, or `utils/`. Search those packages above before adding a function. `extract/__init__.py` is empty; keep it empty. Do not add `load/__init__.py` or other package inits.
+There is no `src/`, `lib/`, or `utils/`. Search the packages above before adding a function. `extract/__init__.py` is empty; keep it empty. Do not add `load/__init__.py` or other package inits.
 
-Current phase and status: follow `plans/00-roadmap.md` and the active phase note it points to. Do not implement later phases while that note is the current step. Procedure detail for extract and load stays in `plans/01-extract.md` and `plans/02-raw-load.md` - do not weaken those contracts in code. Phase 3 procedure is `plans/03-dbt-transform.md`; stay on the checklist step it marks current. Do not implement Airflow.
+Follow `plans/00-roadmap.md` and the active phase note for what to implement next. Do not implement later phases while that note is the current step. Procedure detail for extract, load, and dbt stays in `plans/01-extract.md`, `plans/02-raw-load.md`, and `plans/03-dbt-transform.md` - do not weaken those contracts in code.
 
 ## Build and test commands
 
@@ -40,7 +42,7 @@ ruff format --check
 pytest
 ```
 
-Fix lint and test failures you find, including ones you did not cause.
+From `transform/`: `dbt deps --profiles-dir .` and `dbt parse --profiles-dir .` (or `dbt build` when models are ready). Fix lint and test failures you find, including ones you did not cause.
 
 ## Code style guidelines
 
@@ -53,15 +55,16 @@ Prefer the simplest code that fully meets the current requirement and that a rea
 - Call `load_local_env()` once at the start of `main`, before any getter.
 - Database, schema, tables, stage, file format, and the S3 prefix `bronze/daily_bars` stay hard-coded where the code already hard-codes them.
 - Vendor column names stay as landed until staging. Do not rename in the extract or loader.
-- Update this file when a project decision changes. Update the relevant `plans/` file and `plans/00-roadmap.md` in the same change.
-- Keep `README.md` status honest (Built, In progress, Planned). Lead with the system, the grain, and the design decisions. Do not turn it into a tutorial or a tool glossary.
+- Do not dedupe silver by `extracted_at`; delete-then-copy leaves one landing per date. Catch broken loads with uniqueness tests.
+- dbt `generate_schema_name` must return the custom schema as-is so `STAGING` / `MARTS` are not concatenated onto the target schema.
+- Keep `README.md` a system description (grain, architecture, design decisions), not a changelog or tutorial. Do not turn it into a tool glossary.
 
 ## Testing instructions
 
 - Extract landing changes: add coverage in `tests/test_daily_bars.py`.
 - Load changes: add coverage in `tests/test_copy_daily_bars.py`. Mock S3 with moto and mock `snowflake.connector.connect`.
 - Do not open a live bucket, Massive API, or Snowflake account from pytest.
-- Prefer tests that lock the contracts in `plans/` (manifest checks, delete-then-copy shape, zero-row `COPY`, session parameters) over brittle internal structure.
+- Prefer tests that lock the contracts in `plans/` (manifest checks, delete-then-copy shape, zero-row `COPY`, session parameters, dbt source/staging contracts) over brittle internal structure.
 
 ## Security considerations
 
