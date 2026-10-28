@@ -267,8 +267,7 @@ def copy_daily_bars(trade_date: date) -> None:
                 ) from err
             if dated != row_count:
                 raise RuntimeError(
-                    "trade_date check failed: "
-                    f"dated={dated} row_count={row_count}"
+                    f"trade_date check failed: dated={dated} row_count={row_count}"
                 )
 
             cursor.execute(
