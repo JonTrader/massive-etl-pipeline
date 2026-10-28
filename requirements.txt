@@ -3,3 +3,4 @@ exchange_calendars==4.13.2
 pyarrow==25.0.1
 python-dotenv==1.2.3
 requests==2.34.2
+snowflake-connector-python==4.8.0
