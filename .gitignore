@@ -6,3 +6,7 @@ __pycache__/
 *.p8
 *.pem
 plans/
+transform/target/
+transform/dbt_packages/
+transform/logs/
+transform/.user.yml

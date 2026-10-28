@@ -4,19 +4,20 @@ Rules for agents changing this repository. `README.md` is the system description
 
 ## Project overview
 
-Daily US equity bars: one Massive grouped request per market date lands as Parquet plus a manifest on S3; Snowflake loads that date into `MARKET.RAW`. dbt (silver/gold) and Airflow are planned and not started. Cleansing belongs in SQL, not in the extract.
+Daily US equity bars: one Massive grouped request per market date lands as Parquet plus a manifest on S3; Snowflake loads that date into `MARKET.RAW`. dbt transform Phase 3 Step 1 scaffold is in place under `transform/` (no sources or models yet; next is Step 2). Airflow is planned and not started. Cleansing belongs in SQL, not in the extract.
 
 | Path | Role |
 | --- | --- |
 | `extract/` | Land one date on S3 (`python -m extract.daily_bars`) |
 | `load/` | Reload one date into Snowflake (`python -m load.copy_daily_bars`) |
+| `transform/` | dbt project (`market_bars`); Step 1 scaffold only |
 | `snowflake/` | Bootstrap SQL |
 | `tests/` | pytest |
 | `plans/` | Roadmap, phase notes, improvements |
 
 There is no `src/`, `lib/`, or `utils/`. Search those packages above before adding a function. `extract/__init__.py` is empty; keep it empty. Do not add `load/__init__.py` or other package inits.
 
-Current phase and status: follow `plans/00-roadmap.md` and the active phase note it points to. Do not implement later phases while that note is the current step. Procedure detail for extract and load stays in `plans/01-extract.md` and `plans/02-raw-load.md` - do not weaken those contracts in code.
+Current phase and status: follow `plans/00-roadmap.md` and the active phase note it points to. Do not implement later phases while that note is the current step. Procedure detail for extract and load stays in `plans/01-extract.md` and `plans/02-raw-load.md` - do not weaken those contracts in code. Phase 3 procedure is `plans/03-dbt-transform.md`; stay on the checklist step it marks current. Do not implement Airflow.
 
 ## Build and test commands
 
@@ -29,7 +30,7 @@ python -m pip install -r requirements.txt
 python -m pip install --group dev
 ```
 
-The group install does not include runtime, so run both. `requirements.txt` is the runtime source of truth (exact `==` pins). Dev tools (pytest, responses, moto[s3], Ruff) are the `dev` group in `[dependency-groups]` in `pyproject.toml`. There is no `requirements-dev.txt`. Bump a runtime pin in `requirements.txt` and a dev pin in `pyproject.toml`.
+The group install does not include runtime, so run both. `requirements.txt` is the runtime source of truth (exact `==` pins), including `dbt-snowflake` and `dbt-core` (pinned on 1.12.x so pip does not pull a 1.13 beta). Dev tools (pytest, responses, moto[s3], Ruff) are the `dev` group in `[dependency-groups]` in `pyproject.toml`. There is no `requirements-dev.txt`. Bump a runtime pin in `requirements.txt` and a dev pin in `pyproject.toml`. `dbt_utils` is pinned in `transform/packages.yml` and installed with `dbt deps` from `transform/`, not pip.
 
 Verify from the repository root with the venv Python:
 
@@ -69,4 +70,5 @@ Prefer the simplest code that fully meets the current requirement and that a rea
 - Runtime secrets come from the environment: `MASSIVE_API_KEY`, AWS credentials via the normal boto3 chain, Snowflake key-pair path and optional passphrase. This machine has no shared AWS credentials file; local runs load AWS keys from the private gitignored `.env`. Deployed runs set the same names in the environment.
 - Region is `AWS_DEFAULT_REGION` only. Do not add `AWS_REGION`.
 - Snowflake auth is key-pair (`SNOWFLAKE_JWT`). The storage integration IAM policy is read-only; the extract writer is a different identity.
+- dbt `transform/profiles.yml` uses the same Snowflake env names via `env_var` only. No secrets in that file.
 - Do not print or log secret values.
