@@ -154,6 +154,9 @@ def copy_daily_bars(trade_date: date) -> None:
         "session_parameters": {
             "QUERY_TAG": "daily_bars_load",
             "STATEMENT_TIMEOUT_IN_SECONDS": "600",
+            # Keep quoted "T" and "t" distinct. An account default of true
+            # would fold both to "T" and break the CASE_SENSITIVE match.
+            "QUOTED_IDENTIFIERS_IGNORE_CASE": "FALSE",
         },
     }
     if passphrase:

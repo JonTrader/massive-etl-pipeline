@@ -23,13 +23,13 @@ flowchart LR
   airflow -.-> dbt
 ```
 
-Airflow orders extract, load, and dbt. Each of those steps also runs on its own. Extract and the S3 landing are built. The COPY is written and a trading day has been loaded on a live account. A closed day is still open. dbt and Airflow are planned.
+Airflow orders extract, load, and dbt. Each of those steps also runs on its own. Extract and the S3 landing are built. The COPY is built; a trading day and a closed day have been loaded on a live account. dbt and Airflow are planned.
 
 | Step | Responsibility | State |
 | --- | --- | --- |
 | Extract | One Massive request and one Parquet partition per market date | Built |
 | Bronze | S3 archive of the vendor payload, manifest written last | Built |
-| Load | Date-scoped `COPY` into `MARKET.RAW`, plus an audit row | Written; trading day verified |
+| Load | Date-scoped `COPY` into `MARKET.RAW`, plus an audit row | Built; trading and closed day verified |
 | Transform | dbt builds `STAGING` (silver) and `MARTS` (gold) | Planned |
 | Orchestrate | Airflow runs extract, load, then `dbt build` | Planned |
 
@@ -109,7 +109,7 @@ Runtime pins are in `requirements.txt`. pytest, responses, moto, and Ruff are th
 
 **Built.** The extract is on `main`. `python -m extract.daily_bars YYYY-MM-DD` lands one market date on S3. `tests/test_daily_bars.py` covers schema, fetch validation, retries, the empty session, and the upload.
 
-**In progress.** The RAW load is on branch `snowflake-raw` and is not committed. `load/copy_daily_bars.py`, `snowflake/bootstrap.sql`, and the `snowflake-connector-python` pin in `requirements.txt` are in the working tree. A live trading-day load succeeded. A closed-day load and what `COPY` returns for a zero-row Parquet file are still open. `tests/test_copy_daily_bars.py` is not written yet.
+**In progress on `snowflake-raw`.** The RAW load is built: `load/copy_daily_bars.py`, `snowflake/bootstrap.sql`, `tests/test_copy_daily_bars.py`, and the `snowflake-connector-python` pin. A live trading day and a live closed day (`2026-10-25`) succeeded. Zero-row `COPY` returns one `LOADED` row with `rows_loaded` 0. dbt and Airflow are still planned.
 
 **Planned.** dbt under `transform/`, the daily DAG, and a sequential backfill. Airflow is planned as a local Docker run that calls the same extract and load functions. Before that image is built, its supported Python and constraints file have to be checked against this repo's 3.14 environment. The schedule and the `trade_date` parameter above are decided.
 
@@ -160,7 +160,7 @@ Copy `.env.example` to `.env`. Set `MASSIVE_API_KEY` and `S3_BUCKET`. Set `AWS_D
 
 A regular session lands thousands of symbols. A Saturday lands zero rows and a manifest with `row_count` 0.
 
-The loader entry point is `python -m load.copy_daily_bars YYYY-MM-DD`. It also needs `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PRIVATE_KEY_PATH`, `SNOWFLAKE_WAREHOUSE`, and `SNOWFLAKE_ROLE`. `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE` is only for an encrypted key. A trading day has been loaded on a live account. A closed day has not.
+The loader entry point is `python -m load.copy_daily_bars YYYY-MM-DD`. It also needs `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PRIVATE_KEY_PATH`, `SNOWFLAKE_WAREHOUSE`, and `SNOWFLAKE_ROLE`. `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE` is only for an encrypted key. A trading day and a closed day have been loaded on a live account.
 
 From the repository root, with the venv Python:
 

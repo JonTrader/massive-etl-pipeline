@@ -1,5 +1,6 @@
 import json
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from unittest.mock import patch
 
 import boto3
@@ -192,6 +193,7 @@ def test_good_load_runs_delete_copy_update_count_merge_and_commits() -> None:
     assert connect_kwargs["session_parameters"] == {
         "QUERY_TAG": "daily_bars_load",
         "STATEMENT_TIMEOUT_IN_SECONDS": "600",
+        "QUOTED_IDENTIFIERS_IGNORE_CASE": "FALSE",
     }
     assert "private_key_file_pwd" not in connect_kwargs
 
@@ -502,3 +504,10 @@ def test_passphrase_passed_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
         copy_daily_bars(FRIDAY)
 
     assert connect_kwargs["private_key_file_pwd"] == "secret"
+
+
+def test_bootstrap_sets_quoted_identifiers_before_daily_bars_table() -> None:
+    text = Path("snowflake/bootstrap.sql").read_text(encoding="utf-8")
+    alter = text.index("ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = FALSE")
+    create = text.index("CREATE TABLE IF NOT EXISTS MARKET.RAW.DAILY_BARS")
+    assert alter < create
