@@ -4,13 +4,13 @@ Rules for agents changing this repository. `README.md` is the system description
 
 ## Project overview
 
-Daily US equity bars: one Massive grouped request per market date lands as Parquet plus a manifest on S3; Snowflake loads that date into `MARKET.RAW`. dbt transform Phase 3 Step 1 scaffold is in place under `transform/` (no sources or models yet; next is Step 2). Airflow is planned and not started. Cleansing belongs in SQL, not in the extract.
+Daily US equity bars: one Massive grouped request per market date lands as Parquet plus a manifest on S3; Snowflake loads that date into `MARKET.RAW`. dbt transform Phase 3 Step 2 sources are in place under `transform/` (`sources.yml` for `RAW.DAILY_BARS` and freshness on `RAW.DAILY_BARS_LOADS`; staging/mart models not written yet; next is Step 3). Airflow is planned and not started. Cleansing belongs in SQL, not in the extract.
 
 | Path | Role |
 | --- | --- |
 | `extract/` | Land one date on S3 (`python -m extract.daily_bars`) |
 | `load/` | Reload one date into Snowflake (`python -m load.copy_daily_bars`) |
-| `transform/` | dbt project (`market_bars`); Step 1 scaffold only |
+| `transform/` | dbt project (`market_bars`); sources declared; staging/mart models not written yet |
 | `snowflake/` | Bootstrap SQL |
 | `tests/` | pytest |
 | `plans/` | Roadmap, phase notes, improvements |

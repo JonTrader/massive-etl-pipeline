@@ -30,7 +30,7 @@ Airflow orders extract, load, and dbt. Each of those steps also runs on its own.
 | Extract | One Massive request and one Parquet partition per market date | Built |
 | Bronze | S3 archive of the vendor payload, manifest written last | Built |
 | Load | Date-scoped `COPY` into `MARKET.RAW`, plus an audit row | Built; trading and closed day verified |
-| Transform | dbt builds `STAGING` (silver) and `MARTS` (gold) | In progress on `dbt-transform` (scaffold only) |
+| Transform | dbt builds `STAGING` (silver) and `MARTS` (gold) | In progress on `dbt-transform` (sources declared; models not written) |
 | Orchestrate | Airflow runs extract, load, then `dbt build` | Planned |
 
 S3 is the record of the vendor payload. `MARTS` will be the record of the analyst definition. The pipeline writes objects with its own AWS credentials. Snowflake reads them through a storage integration and an external stage, on a separate read-only role.
@@ -102,16 +102,16 @@ Runtime pins are in `requirements.txt`. pytest, responses, moto, and Ruff are th
 - **`trade_date` in SQL.** `MATCH_BY_COLUMN_NAME` cannot take a `SELECT`, so the `COPY` inserts `trade_date` as null and the same transaction sets `TO_DATE(TO_TIMESTAMP_NTZ("t", 3))`. `t` marks the 16:00 New York close, so its UTC calendar date is always the session date and no timezone shift is needed. The column stays nullable because a `NOT NULL` constraint would reject the `COPY`.
 - **Explicit `trade_date` parameter.** The DAG parameter defaults to the run's New York date minus one day. The same parameter is how a backfill or a manual run passes a date. `logical_date` follows the timetable, so it is the wrong clock for the market date.
 - **06:00 next morning.** The DAG is planned for 06:00 America/New_York, Tuesday through Saturday (`0 6 * * 2-6`). Tuesday loads Monday. Saturday loads Friday. End-of-day aggregates have settled by then. The after-hours session closes at 20:00. A holiday lands an empty partition. Retries cover a trading day the vendor has not published yet.
-- **Freshness on the audit table.** A closed day writes an audit row and no bar rows, so freshness on `DAILY_BARS` cannot see it. Freshness will read `DAILY_BARS_LOADS.extracted_at` and warn after about 3 days. A Monday holiday can still stretch the gap from Saturday 06:00 to Wednesday 06:00. That edge is accepted.
+- **Freshness on the audit table.** A closed day writes an audit row and no bar rows, so freshness on `DAILY_BARS` cannot see it. `transform/models/sources.yml` reads `DAILY_BARS_LOADS.extracted_at` and warns after about 3 days. A Monday holiday can still stretch the gap from Saturday 06:00 to Wednesday 06:00. That edge is accepted.
 - **Hermetic tests.** Extract tests stub HTTP with `responses` and S3 with `moto`. Load tests mock the Snowflake connector the same way. A green test run does not call Massive, AWS, or Snowflake.
 
 ## Status
 
 **Built.** The extract and RAW load are on `main`. `python -m extract.daily_bars YYYY-MM-DD` lands one market date on S3. `python -m load.copy_daily_bars YYYY-MM-DD` reloads that date into `MARKET.RAW`. A live trading day and a live closed day (`2026-10-25`) succeeded. Zero-row `COPY` returns one `LOADED` row with `rows_loaded` 0.
 
-**In progress on `dbt-transform`.** `transform/` holds the dbt project scaffold (`dbt_project.yml`, env-only `profiles.yml`, `packages.yml`, `generate_schema_name` macro). `dbt-snowflake` is pinned. No source YAML or staging/mart models yet. Airflow is still planned.
+**In progress on `dbt-transform`.** `transform/` holds the dbt project scaffold (`dbt_project.yml`, env-only `profiles.yml`, `packages.yml`, `generate_schema_name` macro) and `models/sources.yml` (`raw.DAILY_BARS` plus freshness on `raw.DAILY_BARS_LOADS`). `dbt-snowflake` is pinned. Staging and mart SQL models are not written yet. Airflow is still planned.
 
-**Planned.** Sources, silver/gold models, and tests under `transform/`; then the daily DAG and a sequential backfill. Airflow is planned as a local Docker run that calls the same extract and load functions. Before that image is built, its supported Python and constraints file have to be checked against this repo's 3.14 environment. The schedule and the `trade_date` parameter above are decided.
+**Planned.** Silver/gold models and tests under `transform/`; then the daily DAG and a sequential backfill. Airflow is planned as a local Docker run that calls the same extract and load functions. Before that image is built, its supported Python and constraints file have to be checked against this repo's 3.14 environment. The schedule and the `trade_date` parameter above are decided.
 
 Reference data, splits, dividends, adjusted and total-return series, minute bars, trades, quotes, websockets, and hosted orchestration are later work. This repository is the daily path.
 
@@ -122,7 +122,7 @@ extract/daily_bars.py          grouped request, Parquet write, S3 put
 extract/config.py              environment
 load/copy_daily_bars.py        date-scoped Snowflake reload
 snowflake/bootstrap.sql        RAW tables, integration, stage
-transform/                     dbt project scaffold (no models yet)
+transform/                     dbt project (sources.yml; staging/mart models not yet)
 tests/test_daily_bars.py       hermetic extract tests
 tests/test_copy_daily_bars.py  hermetic load tests
 plans/00-roadmap.md            phase status and decision log
