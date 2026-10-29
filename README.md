@@ -110,13 +110,47 @@ Runtime pins are in `requirements.txt`. pytest, responses, moto, and Ruff are th
 
 ## Status
 
-**Built.** Extract and RAW load on `main`. `python -m extract.daily_bars YYYY-MM-DD` lands one market date on S3. `python -m load.copy_daily_bars YYYY-MM-DD` reloads that date into `MARKET.RAW`. Live trading-day and closed-day loads succeeded.
-
-**In progress.** dbt under `transform/` (sources, staging, then marts). See `plans/00-roadmap.md`.
+**Built.** Extract and RAW load on `main`. `python -m extract.daily_bars YYYY-MM-DD` lands one market date on S3. `python -m load.copy_daily_bars YYYY-MM-DD` reloads that date into `MARKET.RAW`. Live trading-day and closed-day loads succeeded. Transform/dbt under `transform/` builds `STAGING` and `MARTS` (`dim_date`, `dim_ticker`, `fact_daily_bar`, `fact_daily_bar_performance`); live `dbt build` verified. From `transform/`: `dbt deps --profiles-dir .`, then `dbt build --profiles-dir .`.
 
 **Planned.** Airflow as a local Docker run that calls the same extract and load functions, then `dbt build`. Before that image is built, its supported Python and constraints file have to be checked against this repo's 3.14 environment.
 
 Reference data, splits, dividends, adjusted and total-return series, minute bars, trades, quotes, websockets, and hosted orchestration are later work. This repository is the daily path.
+
+## Analyst queries (`MARKET.MARTS`)
+
+Short examples against gold. Swap the literals for the window you care about.
+
+```sql
+-- One ticker's bars for a month
+select ticker, trade_date, open, high, low, close, volume, vwap, transactions
+from market.marts.fact_daily_bar
+where ticker = 'AAPL'
+  and trade_date between '2024-03-01' and '2024-03-31'
+order by trade_date;
+```
+
+```sql
+-- Average volume over each ticker's 20 most recent bars
+select ticker, avg(volume) as avg_volume_20
+from (
+    select
+        ticker,
+        volume,
+        row_number() over (partition by ticker order by trade_date desc) as rn
+    from market.marts.fact_daily_bar
+) recent
+where rn <= 20
+group by ticker
+order by avg_volume_20 desc;
+```
+
+```sql
+-- Tickers whose first trade date falls inside a loaded window
+select ticker, first_trade_date, last_trade_date
+from market.marts.dim_ticker
+where first_trade_date between '2024-03-01' and '2024-03-31'
+order by first_trade_date, ticker;
+```
 
 ## Repository
 
