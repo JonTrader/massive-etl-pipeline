@@ -57,6 +57,7 @@ Prefer the simplest code that fully meets the current requirement and that a rea
 - Vendor column names stay as landed until staging. Do not rename in the extract or loader.
 - Do not dedupe silver by `extracted_at`; delete-then-copy leaves one landing per date. Catch broken loads with uniqueness tests.
 - dbt `generate_schema_name` must return the custom schema as-is so `STAGING` / `MARTS` are not concatenated onto the target schema.
+- Gold (`MARTS`) star: `dim_date`, `dim_ticker`, `fact_daily_bar`, and `fact_daily_bar_performance`. Performance is a second fact at the same grain, linked only through the shared dims - not a dim and not a bridge table. `dollar_volume` is `close * volume`.
 - Keep `README.md` a system description (grain, architecture, design decisions), not a changelog or tutorial. Do not turn it into a tool glossary.
 
 ## Testing instructions
@@ -73,5 +74,5 @@ Prefer the simplest code that fully meets the current requirement and that a rea
 - Runtime secrets come from the environment: `MASSIVE_API_KEY`, AWS credentials via the normal boto3 chain, Snowflake key-pair path and optional passphrase. This machine has no shared AWS credentials file; local runs load AWS keys from the private gitignored `.env`. Deployed runs set the same names in the environment.
 - Region is `AWS_DEFAULT_REGION` only. Do not add `AWS_REGION`.
 - Snowflake auth is key-pair (`SNOWFLAKE_JWT`). The storage integration IAM policy is read-only; the extract writer is a different identity.
-- dbt `transform/profiles.yml` uses the same Snowflake env names via `env_var` only. No secrets in that file.
+- dbt `transform/profiles.yml` uses the same Snowflake env names via `env_var` only. No secrets in that file. dbt loads `.env` from its working directory (`transform/`), not the repo-root `.env` that Python reads via `load_local_env()`. Use a `transform/.env` link to the root `.env` (gitignored); do not commit secrets.
 - Do not print or log secret values.
