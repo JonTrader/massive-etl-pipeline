@@ -27,7 +27,7 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SNOWFLAKE_USER", "test-user")
     monkeypatch.setenv("SNOWFLAKE_PRIVATE_KEY_PATH", "rsa_key.p8")
     monkeypatch.setenv("SNOWFLAKE_WAREHOUSE", "test-wh")
-    monkeypatch.setenv("SNOWFLAKE_ROLE", "MARKET_LOADER")
+    monkeypatch.setenv("SNOWFLAKE_ROLE", "LOADER")
     monkeypatch.delenv("SNOWFLAKE_PRIVATE_KEY_PASSPHRASE", raising=False)
 
 

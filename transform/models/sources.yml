@@ -45,9 +45,11 @@ sources:
           One row per loaded date, including closed days with row_count 0.
           Freshness uses extracted_at (manifest clock, UTC) so a holiday
           load still advances the clock.
-        loaded_at_field: extracted_at
-        freshness:
-          warn_after: {count: 3, period: day}
+        config:
+          # Under config (dbt 1.10+); top-level loaded_at_field is ignored by the LSP.
+          loaded_at_field: extracted_at
+          freshness:
+            warn_after: {count: 3, period: day}
         columns:
           - name: trade_date
             description: Loaded market date (informational primary key).
