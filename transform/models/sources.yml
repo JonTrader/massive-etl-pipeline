@@ -1,0 +1,65 @@
+# Freshness lives on DAILY_BARS_LOADS, not DAILY_BARS.
+# A closed day writes an audit row and no bar rows, so the bar table's
+# extracted_at does not move on a holiday. LOADS.extracted_at is the
+# manifest clock (UTC) and advances on every loaded date, including closed days.
+version: 2
+
+sources:
+  - name: raw
+    database: MARKET
+    schema: RAW
+    tables:
+      - name: DAILY_BARS
+        description: >
+          Vendor daily bar rows. Quoted identifiers match Massive column
+          names case-sensitively. trade_date is set by the loader;
+          extracted_at is the Parquet object's S3 last-modified time (UTC),
+          not the manifest clock. Do not put freshness here.
+        columns:
+          # Snowflake stores vendor keys as quoted identifiers (T vs t).
+          - name: T
+            description: Ticker (quoted "T" in Snowflake).
+          - name: o
+            description: Open (quoted "o").
+          - name: h
+            description: High (quoted "h").
+          - name: l
+            description: Low (quoted "l").
+          - name: c
+            description: Close (quoted "c").
+          - name: v
+            description: Volume (quoted "v").
+          - name: vw
+            description: Volume-weighted average price (quoted "vw").
+          - name: t
+            description: Bar timestamp, epoch milliseconds (quoted "t").
+          - name: n
+            description: Transaction count (quoted "n").
+          - name: trade_date
+            description: Session date set by the loader from t.
+          - name: extracted_at
+            description: Parquet S3 last-modified (UTC), not the manifest clock.
+
+      - name: DAILY_BARS_LOADS
+        description: >
+          One row per loaded date, including closed days with row_count 0.
+          Freshness uses extracted_at (manifest clock, UTC) so a holiday
+          load still advances the clock.
+        config:
+          # Under config (dbt 1.10+); top-level loaded_at_field is ignored by the LSP.
+          loaded_at_field: extracted_at
+          freshness:
+            warn_after: {count: 3, period: day}
+        columns:
+          - name: trade_date
+            description: Loaded market date (informational primary key).
+          - name: row_count
+            description: Rows copied for that date; 0 on a closed day.
+          - name: extracted_at
+            description: Manifest clock, UTC.
+          - name: request_id
+            description: API request id when present.
+          - name: api_status
+            description: API status from the manifest.
+          - name: loaded_at
+            description: When the loader wrote this audit row.

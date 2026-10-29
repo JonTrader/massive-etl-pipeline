@@ -1,4 +1,6 @@
 boto3==1.43.103
+dbt-core==1.12.6
+dbt-snowflake==1.12.4
 exchange_calendars==4.13.2
 pyarrow==25.0.1
 python-dotenv==1.2.3

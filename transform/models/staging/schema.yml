@@ -1,0 +1,66 @@
+version: 2
+
+models:
+  - name: stg_daily_bars
+    description: >
+      Clean silver daily bars from RAW.DAILY_BARS. Vendor columns renamed and
+      cast. Quality pass only (OHLCV present, high >= low, volume >= 0).
+      No dedupe; delete-then-copy leaves one landing per date.
+    columns:
+      - name: ticker
+        description: Symbol from vendor T.
+        tests:
+          - not_null
+      - name: trade_date
+        description: Session date from the loader; not re-derived from t.
+        tests:
+          - not_null
+      - name: close
+        description: Close price.
+        tests:
+          - not_null
+      - name: open
+        description: Open price.
+        tests:
+          - not_null
+      - name: high
+        description: High price.
+        tests:
+          - not_null
+      - name: low
+        description: Low price.
+        tests:
+          - not_null
+      - name: volume
+        description: Share volume.
+        tests:
+          - not_null
+      - name: extracted_at
+        description: Parquet S3 last-modified (UTC), not the manifest clock.
+        tests:
+          - not_null
+      - name: window_start_epoch_ms
+        description: Vendor bar timestamp t as epoch milliseconds.
+      - name: vwap
+        description: Volume-weighted average price.
+      - name: transactions
+        description: Transaction count from vendor n.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - ticker
+              - trade_date
+
+  - name: stg_daily_bars_quarantine
+    description: >
+      Rows from RAW.DAILY_BARS that fail quality (null OHLCV/ticker, high < low,
+      or volume < 0). Complements stg_daily_bars so every RAW row lands in one
+      place. Bronze remains the vendor payload.
+    columns:
+      - name: ticker
+        description: Symbol from vendor T; may be null.
+      - name: trade_date
+        description: Session date from the loader when present.
+      - name: close
+        description: Close price; may be null.

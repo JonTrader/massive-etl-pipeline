@@ -1,0 +1,134 @@
+version: 2
+
+models:
+  - name: dim_date
+    description: >
+      Calendar spine from min to max staging trade_date. Weekends flagged.
+      Holiday is a weekday with no staging bar rows (not an XNYS seed).
+    columns:
+      - name: date_day
+        description: Calendar date (spine grain).
+        tests:
+          - unique
+          - not_null
+      - name: is_weekend
+        description: True when date_day is Saturday or Sunday.
+      - name: is_holiday
+        description: >
+          Weekday with no rows in stg_daily_bars. Not an exchange calendar feed.
+
+  - name: dim_ticker
+    description: >
+      Distinct tickers from silver with first and last trade_date observed.
+      Ticker is the natural key; no company name or exchange.
+    columns:
+      - name: ticker
+        description: Symbol; natural key.
+        tests:
+          - unique
+          - not_null
+      - name: first_trade_date
+        description: Earliest trade_date for this ticker in staging.
+      - name: last_trade_date
+        description: Latest trade_date for this ticker in staging.
+
+  - name: fact_daily_bar
+    description: >
+      Unadjusted daily bars at grain ticker + trade_date. Measures from silver;
+      window_start_epoch_ms omitted from gold.
+    columns:
+      - name: ticker
+        description: Symbol; FK to dim_ticker.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_ticker')
+                field: ticker
+      - name: trade_date
+        description: Session date; FK to dim_date.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_day
+      - name: open
+        description: Open price (unadjusted).
+      - name: high
+        description: High price (unadjusted).
+      - name: low
+        description: Low price (unadjusted).
+      - name: close
+        description: Close price (unadjusted).
+      - name: volume
+        description: Share volume.
+      - name: vwap
+        description: Volume-weighted average price.
+      - name: transactions
+        description: Transaction count.
+      - name: extracted_at
+        description: Parquet S3 last-modified (UTC) from silver.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - ticker
+              - trade_date
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "high >= low"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "volume >= 0"
+
+  - name: fact_daily_bar_performance
+    description: >
+      Derived daily performance at grain ticker + trade_date. Same keys as
+      fact_daily_bar; connected through shared dim_ticker and dim_date.
+      dollar_volume is close * volume. Prior-close measures are null on the
+      first loaded day per ticker.
+    columns:
+      - name: ticker
+        description: Symbol; FK to dim_ticker.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_ticker')
+                field: ticker
+      - name: trade_date
+        description: Session date; FK to dim_date.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_day
+      - name: dollar_volume
+        description: close * volume.
+      - name: range
+        description: high - low.
+      - name: gap_pct
+        description: (open - prior_close) / prior_close.
+      - name: pct_gain_loss
+        description: (close - prior_close) / prior_close.
+      - name: pct_from_open
+        description: (close - open) / open.
+      - name: dollar_change_from_open
+        description: close - open.
+      - name: dollar_change
+        description: close - prior_close.
+      - name: pct_open_to_high
+        description: (high - open) / open.
+      - name: pct_open_to_low
+        description: (low - open) / open.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - ticker
+              - trade_date
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "range >= 0"

@@ -1,0 +1,16 @@
+name: market_bars
+version: "1.0.0"
+config-version: 2
+profile: market_bars
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+
+models:
+  market_bars:
+    staging:
+      +schema: STAGING
+      +materialized: table
+    marts:
+      +schema: MARTS
+      +materialized: table

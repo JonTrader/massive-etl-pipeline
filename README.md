@@ -1,10 +1,12 @@
 # US Equity Daily Bars
 
-Daily US equity bars, archived and loaded into a medallion-style warehouse. One grouped request to the Massive API (formerly Polygon) returns every US listed stock for a session. Python writes that payload to S3 as Parquet plus a manifest. Snowflake RAW is the loaded copy. dbt is planned for silver and gold, and Airflow is planned to run the path the next morning.
+Daily US equity bars, archived and loaded into a medallion-style warehouse. One grouped request to the Massive API (formerly Polygon) returns every US listed stock for a session. Python writes that payload to S3 as Parquet plus a manifest. Snowflake RAW is the loaded copy. dbt builds silver (`STAGING`) and gold (`MARTS`). Airflow is planned to run extract, load, then `dbt build` the next morning.
 
 The landing is the record of what the vendor returned. A later model can be rebuilt from it. A closed session is a zero-row file, which is a different fact from a date the job never ran.
 
 The grain is one row per ticker per trade date, unadjusted. OTC names are excluded.
+
+Phase status and the current step live in [plans/00-roadmap.md](plans/00-roadmap.md), not in this file.
 
 ## Architecture
 
@@ -23,17 +25,17 @@ flowchart LR
   airflow -.-> dbt
 ```
 
-Airflow orders extract, load, and dbt. Each of those steps also runs on its own. Extract and the S3 landing are built. The COPY is built; a trading day and a closed day have been loaded on a live account. dbt and Airflow are planned.
+Airflow orders extract, load, and dbt. Each of those steps also runs on its own.
 
-| Step | Responsibility | State |
-| --- | --- | --- |
-| Extract | One Massive request and one Parquet partition per market date | Built |
-| Bronze | S3 archive of the vendor payload, manifest written last | Built |
-| Load | Date-scoped `COPY` into `MARKET.RAW`, plus an audit row | Built; trading and closed day verified |
-| Transform | dbt builds `STAGING` (silver) and `MARTS` (gold) | Planned |
-| Orchestrate | Airflow runs extract, load, then `dbt build` | Planned |
+| Step | Responsibility |
+| --- | --- |
+| Extract | One Massive request and one Parquet partition per market date |
+| Bronze | S3 archive of the vendor payload, manifest written last |
+| Load | Date-scoped `COPY` into `MARKET.RAW`, plus an audit row |
+| Transform | dbt builds `STAGING` (silver) and `MARTS` (gold) |
+| Orchestrate | Airflow runs extract, load, then `dbt build` |
 
-S3 is the record of the vendor payload. `MARTS` will be the record of the analyst definition. The pipeline writes objects with its own AWS credentials. Snowflake reads them through a storage integration and an external stage, on a separate read-only role.
+S3 is the record of the vendor payload. `MARTS` is the record of the analyst definition. The pipeline writes objects with its own AWS credentials. Snowflake reads them through a storage integration and an external stage, on a separate read-only role.
 
 ## Grain and landing
 
@@ -67,7 +69,7 @@ A closed day lands that empty file and a manifest with `row_count` 0. An empty r
 
 `MARKET.RAW.DAILY_BARS` keeps the quoted vendor columns, plus nullable `trade_date` and `extracted_at`. Bar-row `extracted_at` is the Parquet object's S3 last-modified time. `MARKET.RAW.DAILY_BARS_LOADS` holds one row per loaded date, including closed days. Its `extracted_at` is the manifest clock.
 
-Planned silver models cast types and send failing rows (null ticker, null close, high below low, negative volume) to quarantine. Planned gold is a star schema: `dim_date` from the loaded calendar range, `dim_ticker` as one row per symbol seen in the bars, and `fact_daily_bar` at the same grain as the landing. Close-to-close change on that fact is a price change. Splits and dividends are not in the extract. dbt is planned to override `generate_schema_name` so `STAGING` and `MARTS` are not concatenated onto the target schema.
+Silver staging renames vendor columns, casts types, and sends failing rows (null OHLCV/ticker, high below low, negative volume) to quarantine. There is no silver dedupe; delete-then-copy leaves one landing per date, and a uniqueness test on `(ticker, trade_date)` catches a broken load. Gold (`MARTS`) is a star schema: `dim_date` from the loaded calendar range, `dim_ticker` as one row per symbol seen in the bars, `fact_daily_bar` (unadjusted OHLCV, VWAP, transactions) at grain ticker plus trade date, and `fact_daily_bar_performance` (dollar volume, range, gap, returns, open-to-high/low) at the same grain. The two facts share `dim_ticker` and `dim_date`; they are not linked by a bridge dim. Close-to-close change uses prior close on the performance fact. Splits and dividends are not in the extract. The dbt project overrides `generate_schema_name` so `STAGING` and `MARTS` are not concatenated onto the target schema.
 
 ## Stack
 
@@ -81,12 +83,12 @@ Planned silver models cast types and send failing rows (null ticker, null close,
 | python-dotenv | Loads `.env` for local runs. |
 | Amazon S3 | Bronze archive of the vendor payload and the manifest. |
 | Snowflake, snowflake-connector-python | Warehouse, key-pair auth, and the date-scoped `COPY`. |
-| dbt | Planned silver and gold models, tests, and freshness. Not installed. |
-| Apache Airflow | Planned schedule, retries, and backfill. Not installed. |
+| dbt-snowflake | dbt Core against Snowflake; project under `transform/`. |
+| Apache Airflow | Planned schedule, retries, and backfill. |
 | pytest, responses, moto | Hermetic tests. No live HTTP, S3, or Snowflake. |
 | Ruff | Lint and format. |
 
-Runtime pins are in `requirements.txt`. pytest, responses, moto, and Ruff are the `dev` group in `pyproject.toml`.
+Runtime pins are in `requirements.txt`. pytest, responses, moto, and Ruff are the `dev` group in `pyproject.toml`. `dbt_utils` is pinned in `transform/packages.yml`.
 
 ## Design decisions
 
@@ -96,45 +98,75 @@ Runtime pins are in `requirements.txt`. pytest, responses, moto, and Ruff are th
 - **Parquet.** Columnar files match the `COPY`, and a zero-row file can still carry the standard schema.
 - **Manifest last.** The Parquet object is put at its final key, then `manifest.json`. Readers treat the manifest as the commit marker. A newer Parquet object means a re-extract is still in progress, and the loader refuses it.
 - **Closed days and empty sessions.** A weekend or holiday still gets a file, so "market closed" is distinct from "never ran." Zero rows on an XNYS session mean the vendor has not published yet, so the run fails and leaves the previous object in place.
-- **Idempotent dates.** Re-running a date overwrites that S3 partition. The loader deletes that `trade_date` and copies the file again in one transaction, so other dates stay. The S3 overwrite is what the extract does today. The delete-then-copy path is written and has not been run on a Snowflake account. Delete-then-copy keeps one landing per date, so staging does not dedupe by `extracted_at`.
+- **Idempotent dates.** Re-running a date overwrites that S3 partition. The loader deletes that `trade_date` and copies the file again in one transaction, so other dates stay. Delete-then-copy keeps one landing per date, so staging does not dedupe by `extracted_at`.
 - **`FORCE = TRUE`.** Without it, `COPY` skips a file it has already loaded, and the delete would wipe the day.
 - **`CASE_SENSITIVE`.** The file has both `T` and `t`. A case-insensitive match would collapse them. The RAW columns are quoted for the same reason.
 - **`trade_date` in SQL.** `MATCH_BY_COLUMN_NAME` cannot take a `SELECT`, so the `COPY` inserts `trade_date` as null and the same transaction sets `TO_DATE(TO_TIMESTAMP_NTZ("t", 3))`. `t` marks the 16:00 New York close, so its UTC calendar date is always the session date and no timezone shift is needed. The column stays nullable because a `NOT NULL` constraint would reject the `COPY`.
 - **Explicit `trade_date` parameter.** The DAG parameter defaults to the run's New York date minus one day. The same parameter is how a backfill or a manual run passes a date. `logical_date` follows the timetable, so it is the wrong clock for the market date.
 - **06:00 next morning.** The DAG is planned for 06:00 America/New_York, Tuesday through Saturday (`0 6 * * 2-6`). Tuesday loads Monday. Saturday loads Friday. End-of-day aggregates have settled by then. The after-hours session closes at 20:00. A holiday lands an empty partition. Retries cover a trading day the vendor has not published yet.
-- **Freshness on the audit table.** A closed day writes an audit row and no bar rows, so freshness on `DAILY_BARS` cannot see it. Freshness will read `DAILY_BARS_LOADS.extracted_at` and warn after about 3 days. A Monday holiday can still stretch the gap from Saturday 06:00 to Wednesday 06:00. That edge is accepted.
-- **Hermetic tests.** Extract tests stub HTTP with `responses` and S3 with `moto`. Load tests will mock the Snowflake connector the same way. A green test run does not call Massive, AWS, or Snowflake.
+- **Freshness on the audit table.** A closed day writes an audit row and no bar rows, so freshness on `DAILY_BARS` cannot see it. Freshness reads `DAILY_BARS_LOADS.extracted_at` and warns after about 3 days. A Monday holiday can still stretch the gap from Saturday 06:00 to Wednesday 06:00. That edge is accepted.
+- **Performance as a second fact.** Derived session measures live in `fact_daily_bar_performance`, not on a dim and not as extra columns on the bar fact. Same grain (ticker + trade_date); connection is shared `dim_ticker` and `dim_date`. `dollar_volume` is `close * volume`.
+- **Hermetic tests.** Extract tests stub HTTP with `responses` and S3 with `moto`. Load tests mock the Snowflake connector the same way. A green test run does not call Massive, AWS, or Snowflake.
 
 ## Status
 
-**Built.** The extract is on `main`. `python -m extract.daily_bars YYYY-MM-DD` lands one market date on S3. `tests/test_daily_bars.py` covers schema, fetch validation, retries, the empty session, and the upload.
+**Built.** Extract and RAW load on `main`. `python -m extract.daily_bars YYYY-MM-DD` lands one market date on S3. `python -m load.copy_daily_bars YYYY-MM-DD` reloads that date into `MARKET.RAW`. Live trading-day and closed-day loads succeeded. Transform/dbt under `transform/` builds `STAGING` and `MARTS` (`dim_date`, `dim_ticker`, `fact_daily_bar`, `fact_daily_bar_performance`); live `dbt build` verified. From `transform/`: `dbt deps --profiles-dir .`, then `dbt build --profiles-dir .`.
 
-**In progress on `snowflake-raw`.** The RAW load is built: `load/copy_daily_bars.py`, `snowflake/bootstrap.sql`, `tests/test_copy_daily_bars.py`, and the `snowflake-connector-python` pin. A live trading day and a live closed day (`2026-10-25`) succeeded. Zero-row `COPY` returns one `LOADED` row with `rows_loaded` 0. dbt and Airflow are still planned.
-
-**Planned.** dbt under `transform/`, the daily DAG, and a sequential backfill. Airflow is planned as a local Docker run that calls the same extract and load functions. Before that image is built, its supported Python and constraints file have to be checked against this repo's 3.14 environment. The schedule and the `trade_date` parameter above are decided.
+**Planned.** Airflow as a local Docker run that calls the same extract and load functions, then `dbt build`. Before that image is built, its supported Python and constraints file have to be checked against this repo's 3.14 environment.
 
 Reference data, splits, dividends, adjusted and total-return series, minute bars, trades, quotes, websockets, and hosted orchestration are later work. This repository is the daily path.
+
+## Analyst queries (`MARKET.MARTS`)
+
+Short examples against gold. Swap the literals for the window you care about.
+
+```sql
+-- One ticker's bars for a month
+select ticker, trade_date, open, high, low, close, volume, vwap, transactions
+from market.marts.fact_daily_bar
+where ticker = 'AAPL'
+  and trade_date between '2024-03-01' and '2024-03-31'
+order by trade_date;
+```
+
+```sql
+-- Average volume over each ticker's 20 most recent bars
+select ticker, avg(volume) as avg_volume_20
+from (
+    select
+        ticker,
+        volume,
+        row_number() over (partition by ticker order by trade_date desc) as rn
+    from market.marts.fact_daily_bar
+) recent
+where rn <= 20
+group by ticker
+order by avg_volume_20 desc;
+```
+
+```sql
+-- Tickers whose first trade date falls inside a loaded window
+select ticker, first_trade_date, last_trade_date
+from market.marts.dim_ticker
+where first_trade_date between '2024-03-01' and '2024-03-31'
+order by first_trade_date, ticker;
+```
 
 ## Repository
 
 ```text
 extract/daily_bars.py          grouped request, Parquet write, S3 put
 extract/config.py              environment
-load/copy_daily_bars.py        date-scoped Snowflake reload (working tree)
-snowflake/bootstrap.sql        RAW tables, integration, stage (working tree)
+load/copy_daily_bars.py        date-scoped Snowflake reload
+snowflake/bootstrap.sql        RAW tables, integration, stage
+transform/                     dbt project (silver/gold)
 tests/test_daily_bars.py       hermetic extract tests
-plans/00-roadmap.md            phase status and decision log
-plans/01-extract.md            extract phase note
-plans/02-raw-load.md           current load step
-plans/03-dbt-transform.md      dbt phase note
-plans/04-airflow.md            Airflow phase note
-plans/improvements.md          open fixes, including the region name
+tests/test_copy_daily_bars.py  hermetic load tests
+plans/                         roadmap, phase notes, decision log
 requirements.txt               runtime pins
 pyproject.toml                 dev group, Ruff, pytest
 .env.example                   variable names, no secrets
 ```
-
-Not in the tree yet: `tests/test_copy_daily_bars.py`, `transform/`, and `dags/`.
 
 ## Run locally
 
@@ -160,7 +192,7 @@ Copy `.env.example` to `.env`. Set `MASSIVE_API_KEY` and `S3_BUCKET`. Set `AWS_D
 
 A regular session lands thousands of symbols. A Saturday lands zero rows and a manifest with `row_count` 0.
 
-The loader entry point is `python -m load.copy_daily_bars YYYY-MM-DD`. It also needs `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PRIVATE_KEY_PATH`, `SNOWFLAKE_WAREHOUSE`, and `SNOWFLAKE_ROLE`. `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE` is only for an encrypted key. A trading day and a closed day have been loaded on a live account.
+The loader entry point is `python -m load.copy_daily_bars YYYY-MM-DD`. It also needs `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PRIVATE_KEY_PATH`, `SNOWFLAKE_WAREHOUSE`, and `SNOWFLAKE_ROLE`. `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE` is only for an encrypted key. The same Snowflake names feed `transform/profiles.yml`. dbt (CLI and the editor extension) loads `.env` only from the directory you run from, not via `load_local_env()`. Keep a link at `transform/.env` to the repo-root `.env` (on this machine a hard link), then from `transform/`: `dbt deps --profiles-dir .`, then `dbt build --profiles-dir .` when models are ready. Reload the editor window after creating the link so the dbt extension picks it up.
 
 From the repository root, with the venv Python:
 
@@ -169,7 +201,3 @@ python -m ruff check
 python -m ruff format --check
 python -m pytest
 ```
-
-## Roadmap
-
-Phase status, the current step, and the decision log are in [plans/00-roadmap.md](plans/00-roadmap.md).
